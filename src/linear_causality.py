@@ -48,9 +48,7 @@ class LinearLKInformationFlow(object):
     def _cal_dH_noise(self, diag_inv_cov, error_square_mean):
         def cal_block_dH_noise_(i):
             return self.xp.trace(error_square_mean[i,i] @ diag_inv_cov[i])
-
-        rows = self.xp.arange(error_square_mean.shape[0])
-        dH_noise = self.xp.vectorize(cal_block_dH_noise_, otypes=[float])(rows) *1/2
+        dH_noise = self.xp.vectorize(cal_block_dH_noise_, otypes=[float])(self.xp.arange(error_square_mean.shape[0])) *1/2
         return dH_noise
     
     def _cal_information_flow_std(self, invC_mul_dC, cov, inv_cov, diag_inv_cov, error_square_mean, n):
@@ -74,8 +72,25 @@ class LinearLKInformationFlow(object):
     #     information_flow_variance = self.xp.vectorize(cal_block_cal_variance_, otypes=[float])(rows, cols)
     #     return self.xp.sqrt(information_flow_variance)
 
+    def _prepare_dataset(self, ts_data, segments, lag_list = [1]):
+        lag_list_length = len(lag_list)
+        assert lag_list_length > 0, f"Assertion failed: lag list must not be empty."
+        ## sort 
+        lag_list = sorted(lag_list)
+        lag_list_max = lag_list[-1]
 
-    def causality_estimate(self, ts_data, segments = None, significance_test = True):
+        delta_ts_data = (ts_data[lag_list_max:,:] - ts_data[lag_list_max - 1 : -1, :]) / (self.dt)
+
+        lag = lag_list[0]
+        processed_ts_data = ts_data[lag_list_max-lag:-lag, :]
+        processed_segments = segments.copy()
+
+        for i,lag in enumerate(lag_list[1:]):
+            processed_ts_data = self.xp.hstack((processed_ts_data, ts_data[lag_list_max-lag:-lag, :]))
+            processed_segments += [[x + ts_data.shape[1]*(i+1), y + ts_data.shape[1]*(i+1)] for x, y in segments]
+        return delta_ts_data, processed_ts_data, processed_segments
+
+    def causality_estimate(self, ts_data, lag_list=[1], segments = None, significance_test = True):
         """
         Calculate Liang-Kleeman information flow under linear conditions with significance test.
 
@@ -86,43 +101,52 @@ class LinearLKInformationFlow(object):
         """
         self.significance_test = significance_test
         ts_length,ts_var_num = ts_data.shape
+        
         assert ts_length>ts_var_num , f"Assertion failed: length of time series ({ts_length}) must be greater than the number of variables ({ts_var_num})."
         if segments==None:
             segments = self._generate_pairs(ts_var_num)
 
-        delta_ts_data = (ts_data[1:,:] - ts_data[:ts_length - 1, :]) / (self.dt)
-        ts_data_process = ts_data[:ts_length - 1, :]
+        segments = [sorted(item) for item in segments]
+
+        self.segments = segments
+        self.lag_list = lag_list
 
 
+        segments_num = len(segments)
+        # delta_ts_data = (ts_data[1:,:] - ts_data[:ts_length - 1, :]) / (self.dt)
+        delta_ts_data, ts_data_process, segments = self._prepare_dataset(ts_data, segments, lag_list)
         x_centered = ts_data_process - self.xp.mean(ts_data_process, axis=0) 
         cov = x_centered.T @ x_centered 
         if significance_test:
             inv_cov = self.xp.linalg.inv(cov)
             inv_cov = self._split_matrix(inv_cov, segments)
-
+        
+        # estimator of dynamic system matrix : A
         invC_mul_dC, _, _, _ = self.xp.linalg.lstsq(x_centered, delta_ts_data, rcond=None) ## TODO: further develop for significance test for subspace causality
         
+        # error square mean
         error_vec = delta_ts_data - x_centered@invC_mul_dC
         error_square_mean = error_vec.T@error_vec/(ts_length-ts_var_num -1)
-        self.error_vec = error_vec
-        self.error_square_mean = error_square_mean
 
-        segments = [sorted(item) for item in segments]
+        # split into block matrix
         cov = self._split_matrix(cov, segments)
-        invC_mul_dC = self._split_matrix(invC_mul_dC.T, segments)
-        error_square_mean = self._split_matrix(error_square_mean, segments)
+        invC_mul_dC = self._split_matrix(invC_mul_dC.T, segments)[:segments_num, :]
+        error_square_mean = self._split_matrix(error_square_mean, segments)[:segments_num, :segments_num]
+        # invariance of block diagonal matrix
         diag_inv_cov = self._cal_diag_inv_cov(cov)
 
 
         ## calculate informtaion flow
-        information_flow = self._cal_information_flow(invC_mul_dC, cov, diag_inv_cov)
+        information_flow = self._cal_information_flow(invC_mul_dC, cov, diag_inv_cov)[:segments_num, :]
         self.information_flow = information_flow
 
         ## calculate normalized information flow
-        dH_noise = self._cal_dH_noise(diag_inv_cov, error_square_mean)
+        dH_noise = self._cal_dH_noise(diag_inv_cov, error_square_mean).reshape(-1,1)
         self.dH_noise = dH_noise
-        normalizer =  self.xp.sum(self.xp.abs(information_flow), axis=1) + self.xp.abs(dH_noise)
+        normalizer =  self.xp.sum(self.xp.abs(information_flow), axis=1, keepdims=True) + self.xp.abs(dH_noise)
+        self.normalizer = normalizer
         normalized_information_flow = information_flow/normalizer
+        
         self.normalized_information_flow = normalized_information_flow
 
         if significance_test:
@@ -138,6 +162,8 @@ class LinearLKInformationFlow(object):
             state_dict = {
             "information_flow": self.information_flow,
             "normalized_information_flow": self.normalized_information_flow,
+            "segments": self.segments,
+            "lag_list": self.lag_list   
             }
             if self.significance_test:
                 state_dict.update({
