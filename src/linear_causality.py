@@ -1,7 +1,6 @@
 import numpy 
 from scipy.stats import norm
 
-## TODO: 增加时间滞后项
 ## TODO: Panel Data
 
 
@@ -32,7 +31,7 @@ class LinearLKInformationFlow(object):
         return [[i, i + 1] for i in range(N)]
 
     def _cal_diag_inv_cov(self, cov):
-        diag_inv_cov = self.xp.vectorize(lambda x: self.xp.linalg.inv(x), otypes=[object])(self.xp.diagonal(cov))
+        diag_inv_cov = self.xp.vectorize(lambda x: self.xp.linalg.pinv(x), otypes=[object])(self.xp.diagonal(cov))
         return diag_inv_cov
 
 
@@ -118,7 +117,7 @@ class LinearLKInformationFlow(object):
         x_centered = ts_data_process - self.xp.mean(ts_data_process, axis=0) 
         cov = x_centered.T @ x_centered 
         if significance_test:
-            inv_cov = self.xp.linalg.inv(cov)
+            inv_cov = self.xp.linalg.pinv(cov)
             inv_cov = self._split_matrix(inv_cov, segments)
         
         # estimator of dynamic system matrix : A
