@@ -1,6 +1,6 @@
 import numpy 
 from scipy.stats import norm
-
+import sys
 ## TODO: Panel Data
 
 
@@ -24,6 +24,20 @@ class LinearLKInformationFlow(object):
         result = self.xp.vectorize(lambda r, c: matrix[r, c], otypes=[object])(row_slices, col_slices)
         return result
 
+    def _inverse_symmetric_mat(self,mat):
+        """
+        Calculate the inverse of a symmetric matrix.
+        """
+        if self.xp.linalg.cond(mat) < 1/sys.float_info.epsilon:
+            inverse_mat = self.xp.linalg.inv(mat)
+            return (inverse_mat+inverse_mat.T)/2
+        else:
+            # warning
+            print("Warning: Matrix is ill-conditioned. Using pseudo-inverse instead.")
+            inverse_mat = self.xp.linalg.pinv(mat)
+            return (inverse_mat+inverse_mat.T)/2
+
+
     def _generate_pairs(self,N):
         '''
         Generate segements for 1d subspace.
@@ -31,7 +45,7 @@ class LinearLKInformationFlow(object):
         return [[i, i + 1] for i in range(N)]
 
     def _cal_diag_inv_cov(self, cov):
-        diag_inv_cov = self.xp.vectorize(lambda x: self.xp.linalg.pinv(x), otypes=[object])(self.xp.diagonal(cov))
+        diag_inv_cov = self.xp.vectorize(lambda x: self._inverse_symmetric_mat(x), otypes=[object])(self.xp.diagonal(cov))
         return diag_inv_cov
 
 
@@ -53,13 +67,24 @@ class LinearLKInformationFlow(object):
     def _cal_information_flow_std(self, invC_mul_dC, cov, inv_cov, diag_inv_cov, error_square_mean, n):
         def cal_block_cal_variance_(i, j):
             temp = cov[i,j].T@diag_inv_cov[i]
-            variance = self.xp.trace(invC_mul_dC[i, j].T @ diag_inv_cov[i] @ invC_mul_dC[i, j] @(cov[j,j] - cov[j,i]@diag_inv_cov[i]@cov[i,j]))/n\
+            variance = self.xp.trace(invC_mul_dC[i, j].T @ diag_inv_cov[i] @ invC_mul_dC[i, j] @(cov[j,j] - cov[j,i]@diag_inv_cov[i]@cov[i,j]))\
                         + self.xp.trace((temp.T@inv_cov[j,j]@temp@error_square_mean[i,i]))
-            return variance
+            return variance/n
         
         rows, cols = self.xp.indices(invC_mul_dC.shape)
         information_flow_variance = self.xp.vectorize(cal_block_cal_variance_, otypes=[float])(rows, cols)
         return self.xp.sqrt(information_flow_variance)
+
+    def _cal_information_flow_std_origin(self, invC_mul_dC, cov, inv_cov, diag_inv_cov, error_square_mean, n):
+        def cal_block_cal_variance_(i, j):
+            temp = cov[i,j].T@diag_inv_cov[i]
+            variance = self.xp.trace((temp.T@inv_cov[j,j]@temp@error_square_mean[i,i]))
+            return variance/n
+        
+        rows, cols = self.xp.indices(invC_mul_dC.shape)
+        information_flow_variance = self.xp.vectorize(cal_block_cal_variance_, otypes=[float])(rows, cols)
+        return self.xp.sqrt(information_flow_variance)
+
 
     # def _cal_information_flow_std_old_version(self, invC_mul_dC, cov, inv_cov, diag_inv_cov, error_square_mean, n):
     #     def cal_block_cal_variance_(i, j):
@@ -115,25 +140,28 @@ class LinearLKInformationFlow(object):
         # delta_ts_data = (ts_data[1:,:] - ts_data[:ts_length - 1, :]) / (self.dt)
         delta_ts_data, ts_data_process, segments = self._prepare_dataset(ts_data, segments, lag_list)
         x_centered = ts_data_process - self.xp.mean(ts_data_process, axis=0) 
-        cov = x_centered.T @ x_centered 
+        cov = x_centered.T @ x_centered / (ts_length -1) # covariance matrix
         if significance_test:
-            inv_cov = self.xp.linalg.pinv(cov)
+            inv_cov = self._inverse_symmetric_mat(cov)
             inv_cov = self._split_matrix(inv_cov, segments)
         
         # estimator of dynamic system matrix : A
         invC_mul_dC, _, _, _ = self.xp.linalg.lstsq(x_centered, delta_ts_data, rcond=None) ## TODO: further develop for significance test for subspace causality
-        
         # error square mean
         error_vec = delta_ts_data - x_centered@invC_mul_dC
         error_square_mean = error_vec.T@error_vec/(ts_length-ts_var_num -1)
+        
+        self.invC_mul_dC = invC_mul_dC
+        self.error_square_mean = error_square_mean
+
 
         # split into block matrix
         cov = self._split_matrix(cov, segments)
         invC_mul_dC = self._split_matrix(invC_mul_dC.T, segments)[:segments_num, :]
         error_square_mean = self._split_matrix(error_square_mean, segments)[:segments_num, :segments_num]
+
         # invariance of block diagonal matrix
         diag_inv_cov = self._cal_diag_inv_cov(cov)
-
 
         ## calculate informtaion flow
         information_flow = self._cal_information_flow(invC_mul_dC, cov, diag_inv_cov)[:segments_num, :]
@@ -150,7 +178,9 @@ class LinearLKInformationFlow(object):
 
         if significance_test:
             information_flow_std = self._cal_information_flow_std(invC_mul_dC, cov, inv_cov, diag_inv_cov, error_square_mean, (ts_length-ts_var_num-1))
+            information_flow_std_origin = self._cal_information_flow_std_origin(invC_mul_dC, cov, inv_cov, diag_inv_cov, error_square_mean, (ts_length-ts_var_num-1))
             self.information_flow_std = information_flow_std
+            self.information_flow_std_origin = information_flow_std_origin
             # information_flow_std_old_version = self._cal_information_flow_std_old_version(invC_mul_dC, cov, inv_cov, diag_inv_cov, error_square_mean, (ts_length-ts_var_num-1))
             # self.information_flow_std_old_version = information_flow_std_old_version
             self.p = (1 - norm.cdf(self.xp.abs(self.information_flow / self.information_flow_std))) * 2 # p-value
@@ -167,6 +197,7 @@ class LinearLKInformationFlow(object):
             if self.significance_test:
                 state_dict.update({
                     "information_flow_std": self.information_flow_std,
+                    "information_flow_std_origin": self.information_flow_std_origin,
                     "statistics":{
                         "p99_critical_value": self.information_flow_std*self.conf_level_99,
                         "p95_critical_value": self.information_flow_std*self.conf_level_95,
