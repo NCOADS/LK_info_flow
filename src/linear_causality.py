@@ -1,8 +1,8 @@
 import numpy 
 from scipy.stats import norm
-from tqdm import tqdm
 import sys
-## TODO: Panel Data
+from src.utils import track
+
 
 
 class LinearLKInformationFlow(object):
@@ -86,17 +86,6 @@ class LinearLKInformationFlow(object):
         information_flow_variance = self.xp.vectorize(cal_block_cal_variance_, otypes=[float])(rows, cols)
         return self.xp.sqrt(information_flow_variance)
 
-
-    # def _cal_information_flow_std_old_version(self, invC_mul_dC, cov, inv_cov, diag_inv_cov, error_square_mean, n):
-    #     def cal_block_cal_variance_(i, j):
-    #         temp = cov[i,j].T@diag_inv_cov[i]
-    #         variance = self.xp.trace((temp.T@inv_cov[j,j]@temp@error_square_mean[i,i]))
-    #         return variance
-        
-    #     rows, cols = self.xp.indices(invC_mul_dC.shape)
-    #     information_flow_variance = self.xp.vectorize(cal_block_cal_variance_, otypes=[float])(rows, cols)
-    #     return self.xp.sqrt(information_flow_variance)
-
     def _prepare_dataset(self, ts_data, segments, lag_list = [1]):
         '''
         prepare for dataset for causality estimation.
@@ -124,13 +113,14 @@ class LinearLKInformationFlow(object):
 
 
 
-    def bootstrap_estimate(self, ts_data, lag_list=[1], segments = None, bootstrap_num = 1000):
+    def bootstrap_estimate(self, ts_data, lag_list=[1], segments = None, bootstrap_num = 1000, output_all = False):
         '''
         bootstrap method
         Parameters:
             ts_data: Time series(length of time series, number of variables).
             segments: A list defining the row and column intervals for dividing the matrix
             bootstrap_num: Number of bootstrap samples.
+            output_all: If True, will output the original list.
         '''
         ts_length,ts_var_num = ts_data.shape
         assert ts_length>ts_var_num , f"Assertion failed: length of time series ({ts_length}) must be greater than the number of variables ({ts_var_num})."
@@ -142,7 +132,8 @@ class LinearLKInformationFlow(object):
         x_centered = ts_data_process - self.xp.mean(ts_data_process, axis=0) 
         ts_length = x_centered.shape[0]
         information_flow_list = []
-        for _ in range(bootstrap_num):
+        t = track(range(bootstrap_num), leave=False, desc="Bootstrap Progress")
+        for _ in t:
             # 生成相同的随机索引
             indices = self.xp.random.choice(range(ts_length), size=ts_length, replace=True)
             # 根据生成的索引抽取对应的样本
@@ -160,7 +151,10 @@ class LinearLKInformationFlow(object):
 
         information_flow_mean = self.xp.mean(information_flow_list, axis=0)
         information_flow_std_error = self.xp.std(information_flow_list, axis=0)
-        return information_flow_mean, information_flow_std_error
+        if output_all:
+            return {"bootstrap_information_flow_mean" : information_flow_mean, "bootstrap_information_flow_std" : information_flow_std_error, "bootstrap_information_flow_list" : information_flow_list}
+        else:
+            return {"bootstrap_information_flow_mean" : information_flow_mean, "bootstrap_information_flow_std" : information_flow_std_error,  "bootstrap_information_flow_list": None}
 
 
 
@@ -195,11 +189,12 @@ class LinearLKInformationFlow(object):
         
         # estimator of dynamic system matrix : A
         invC_mul_dC, _, _, _ = self.xp.linalg.lstsq(x_centered, delta_ts_data, rcond=None) ## TODO: further develop for significance test for subspace causality
+        
         # error square mean
         error_vec = delta_ts_data - x_centered@invC_mul_dC
         error_square_mean = error_vec.T@error_vec/(ts_length-ts_var_num -1)
         
-        self.invC_mul_dC = invC_mul_dC
+        self.invC_mul_dC = invC_mul_dC.T
         self.error_square_mean = error_square_mean
 
 

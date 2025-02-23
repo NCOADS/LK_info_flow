@@ -1,2 +1,5 @@
 numpy<2
 scipy
+tqdm
+ipywidgets
+seaborn
