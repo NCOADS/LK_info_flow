@@ -1,5 +1,6 @@
 import numpy 
 from scipy.stats import norm
+from tqdm import tqdm
 import sys
 ## TODO: Panel Data
 
@@ -97,6 +98,13 @@ class LinearLKInformationFlow(object):
     #     return self.xp.sqrt(information_flow_variance)
 
     def _prepare_dataset(self, ts_data, segments, lag_list = [1]):
+        '''
+        prepare for dataset for causality estimation.
+        Parameters:
+            ts_data: Time series(length of time series, number of variables).
+            segments: A list defining the row and column intervals for dividing the matrix, e.g., [(0, 5), (5, 10)], which devide the matrix into 2 segments.
+            lag_list: A list of integers representing the lag order.
+        '''
         lag_list_length = len(lag_list)
         assert lag_list_length > 0, f"Assertion failed: lag list must not be empty."
         ## sort 
@@ -114,14 +122,55 @@ class LinearLKInformationFlow(object):
             processed_segments += [[x + ts_data.shape[1]*(i+1), y + ts_data.shape[1]*(i+1)] for x, y in segments]
         return delta_ts_data, processed_ts_data, processed_segments
 
+
+
+    def bootstrap_estimate(self, ts_data, lag_list=[1], segments = None, bootstrap_num = 1000):
+        '''
+        bootstrap method
+        Parameters:
+            ts_data: Time series(length of time series, number of variables).
+            segments: A list defining the row and column intervals for dividing the matrix
+            bootstrap_num: Number of bootstrap samples.
+        '''
+        ts_length,ts_var_num = ts_data.shape
+        assert ts_length>ts_var_num , f"Assertion failed: length of time series ({ts_length}) must be greater than the number of variables ({ts_var_num})."
+        if segments==None:
+            segments = self._generate_pairs(ts_var_num)
+        segments = [sorted(item) for item in segments]
+        segments_num = len(segments)
+        delta_ts_data, ts_data_process, segments = self._prepare_dataset(ts_data, segments, lag_list)
+        x_centered = ts_data_process - self.xp.mean(ts_data_process, axis=0) 
+        ts_length = x_centered.shape[0]
+        information_flow_list = []
+        for _ in range(bootstrap_num):
+            # 生成相同的随机索引
+            indices = self.xp.random.choice(range(ts_length), size=ts_length, replace=True)
+            # 根据生成的索引抽取对应的样本
+            x_centered_sample = x_centered[indices]
+            delta_ts_data_sample = delta_ts_data[indices]
+            cov = x_centered_sample.T @ x_centered_sample / (ts_length -1) # covariance matrix
+            invC_mul_dC, _, _, _ = self.xp.linalg.lstsq(x_centered_sample, delta_ts_data_sample, rcond=None) ## TODO: further develop for significance test for subspace causality
+            cov = self._split_matrix(cov, segments)
+            invC_mul_dC = self._split_matrix(invC_mul_dC.T, segments)[:segments_num, :]
+            # invariance of block diagonal matrix
+            diag_inv_cov = self._cal_diag_inv_cov(cov)
+            ## calculate informtaion flow
+            information_flow = self._cal_information_flow(invC_mul_dC, cov, diag_inv_cov)[:segments_num, :]
+            information_flow_list.append(information_flow)
+
+        information_flow_mean = self.xp.mean(information_flow_list, axis=0)
+        information_flow_std_error = self.xp.std(information_flow_list, axis=0)
+        return information_flow_mean, information_flow_std_error
+
+
+
+
     def causality_estimate(self, ts_data, lag_list=[1], segments = None, significance_test = True):
         """
         Calculate Liang-Kleeman information flow under linear conditions with significance test.
-
         Parameters:
             ts_data: Time series(length of time series, number of variables).
             segments: A list defining the row and column intervals for dividing the matrix, e.g., [[0, 5], [5, 10]],[[0,1],[1,2],[2,3]].
-
         """
         self.significance_test = significance_test
         ts_length,ts_var_num = ts_data.shape
@@ -131,15 +180,14 @@ class LinearLKInformationFlow(object):
             segments = self._generate_pairs(ts_var_num)
 
         segments = [sorted(item) for item in segments]
-
-        self.segments = segments
-        self.lag_list = lag_list
-
-
         segments_num = len(segments)
         # delta_ts_data = (ts_data[1:,:] - ts_data[:ts_length - 1, :]) / (self.dt)
         delta_ts_data, ts_data_process, segments = self._prepare_dataset(ts_data, segments, lag_list)
+        self.segments = segments
+        self.lag_list = lag_list
+
         x_centered = ts_data_process - self.xp.mean(ts_data_process, axis=0) 
+        ts_length = x_centered.shape[0] ## overwrite ts_length
         cov = x_centered.T @ x_centered / (ts_length -1) # covariance matrix
         if significance_test:
             inv_cov = self._inverse_symmetric_mat(cov)
