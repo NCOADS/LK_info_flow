@@ -4,3 +4,5 @@
 # 忽略 Python 编译缓存文件
 __pycache__/
 *.pyc
+figs/
+*.eps
