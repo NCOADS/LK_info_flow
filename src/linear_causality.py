@@ -133,6 +133,10 @@ class LinearLKInformationFlow(object):
             segments = self._generate_pairs(ts_var_num)
         segments = [sorted(item) for item in segments]
         segments_num = len(segments)
+
+        # ts_data = (ts_data - self.xp.mean(ts_data, axis=0)) / \
+        #     self.xp.std(ts_data, axis=0)
+
         delta_ts_data, ts_data_process, segments = self._prepare_dataset(
             ts_data, segments, lag_list)
         x_centered = ts_data_process - self.xp.mean(ts_data_process, axis=0)
@@ -173,7 +177,9 @@ class LinearLKInformationFlow(object):
         Calculate Liang-Kleeman information flow under linear conditions with significance test.
         Parameters:
             ts_data: Time series(length of time series, number of variables).
+            lag_list: A list of integers representing the lag order.
             segments: A list defining the row and column intervals for dividing the matrix, e.g., [[0, 5], [5, 10]],[[0,1],[1,2],[2,3]].
+            significance_test: If True, will perform significance test.
         """
         self.significance_test = significance_test
         ts_length, ts_var_num = ts_data.shape
@@ -185,40 +191,52 @@ class LinearLKInformationFlow(object):
         segments = [sorted(item) for item in segments]
         segments_num = len(segments)
         # delta_ts_data = (ts_data[1:,:] - ts_data[:ts_length - 1, :]) / (self.dt)
+
+        # normalize
+        # ts_data = (ts_data - self.xp.mean(ts_data, axis=0)) / \
+        #     self.xp.std(ts_data, axis=0)
+
         delta_ts_data, ts_data_process, segments = self._prepare_dataset(
             ts_data, segments, lag_list)
         self.segments = segments
         self.lag_list = lag_list
 
-        x_centered = ts_data_process - self.xp.mean(ts_data_process, axis=0)
-        ts_length = x_centered.shape[0]  # overwrite ts_length
-        cov = x_centered.T @ x_centered / (ts_length)  # covariance matrix
+        ts_length = ts_data_process.shape[0]  # overwrite ts_length
+        self.deg_freedom = ts_length - ts_var_num
+        cov = self.xp.cov(ts_data_process.T)
         if significance_test:
             inv_cov = self._inverse_symmetric_mat(cov)
             inv_cov = self._split_matrix(inv_cov, segments)
 
         # estimator of dynamic system matrix : A
         # TODO: further develop for significance test for subspace causality
+        ones_column = self.xp.ones((ts_data_process.shape[0], 1))  # 添加常数列
+        ts_data_process_augmented = self.xp.concatenate(
+            [ts_data_process, ones_column], axis=1)
+        self.ts_data_process_augmented = ts_data_process_augmented
+        self.delta_ts_data = delta_ts_data
         invC_mul_dC, _, _, _ = self.xp.linalg.lstsq(
-            x_centered, delta_ts_data, rcond=None)
-
+            ts_data_process_augmented, delta_ts_data, rcond=None)
+        self.invC_mul_dC_ = invC_mul_dC.copy()
         # error square mean
-        error_vec = delta_ts_data - x_centered@invC_mul_dC
-        error_square_mean = error_vec.T@error_vec/(ts_length-ts_var_num)
-
-        self.invC_mul_dC = invC_mul_dC.T
+        error_vec = delta_ts_data - ts_data_process_augmented@invC_mul_dC
+        error_square_mean = error_vec.T@error_vec/self.deg_freedom
+        # constant_term = invC_mul_dC[-1, :].T  # constant term
+        invC_mul_dC = invC_mul_dC[:-1, :].T
+        self.invC_mul_dC = invC_mul_dC
         self.error_square_mean = error_square_mean
 
         # split into block matrix
+        self.cov = cov
         cov = self._split_matrix(cov, segments)
-        invC_mul_dC = self._split_matrix(invC_mul_dC.T, segments)[
+        invC_mul_dC = self._split_matrix(invC_mul_dC, segments)[
             :segments_num, :]
         error_square_mean = self._split_matrix(error_square_mean, segments)[
             :segments_num, :segments_num]
 
         # invariance of block diagonal matrix
         diag_inv_cov = self._cal_diag_inv_cov(cov)
-
+        self.diag_inv_cov = diag_inv_cov
         # calculate informtaion flow
         information_flow = self._cal_information_flow(
             invC_mul_dC, cov, diag_inv_cov)[:segments_num, :]
@@ -237,15 +255,32 @@ class LinearLKInformationFlow(object):
 
         if significance_test:
             information_flow_std = self._cal_information_flow_std(
-                invC_mul_dC, cov, inv_cov, diag_inv_cov, error_square_mean, (ts_length-ts_var_num))
+                invC_mul_dC, cov, inv_cov, diag_inv_cov, error_square_mean, self.deg_freedom)
             information_flow_std_origin = self._cal_information_flow_std_origin(
-                invC_mul_dC, cov, inv_cov, diag_inv_cov, error_square_mean, (ts_length-ts_var_num))
+                invC_mul_dC, cov, inv_cov, diag_inv_cov, error_square_mean, self.deg_freedom)
             self.information_flow_std = information_flow_std
             self.information_flow_std_origin = information_flow_std_origin
             self.p = (1 - norm.cdf(self.xp.abs(self.information_flow /
                       self.information_flow_std))) * 2  # p-value
 
     def get_dict(self):
+        """
+        Get the information flow and normalized information flow.
+        Returns:
+            information_flow: Information flow matrix. (i,j) represents (j → i)'s information flow.
+            normalized_information_flow: Normalized information flow matrix.
+            segments: Segments of the matrix.
+            lag_list: Lag list of the matrix.
+
+
+            information_flow_std: Standard deviation of information flow.
+            information_flow_std_origin: Standard deviation of information flow for original method.
+            statistics: Statistics of the information flow.
+                p99_critical_value: 99% critical value.
+                p95_critical_value: 95% critical value.
+                p90_critical_value: 90% critical value.
+                p: p-value of the information flow.
+        """
         if hasattr(self, 'information_flow'):
             state_dict = {
                 "information_flow": self.information_flow,
@@ -268,3 +303,89 @@ class LinearLKInformationFlow(object):
             return state_dict
         else:
             return "Causality estimate has not been run yet. Please run 'causality_estimate' first!"
+
+    def real_information_flow_linear_case(self, det_mat, sto_mat, deg_freedom=None, segments=None, discrete_lyapunov=True) -> dict:
+        if discrete_lyapunov:
+            from scipy.linalg import solve_discrete_lyapunov
+        else:
+            from scipy.linalg import solve_continuous_lyapunov
+        """
+        Calculate the real information flow for linear case.
+        dX = A X dt + B dw
+        discrete: X(t+1) = (A dt + I) X(t) + B \epsilon
+
+        Parameters:
+            det_mat: Deterministic matrix.
+            sto_mat: Stochastic matrix.
+            deg_freedom: Degree of freedom.
+            segments: A list defining the row and column intervals for dividing the matrix, e.g., [[0, 5], [5, 10]],[[0,1],[1,2],[2,3]].
+            discrete_lyapunov: If True, will use discrete lyapunov equation.
+        """
+        # calculate the covariance matrix
+        if segments == None:
+            segments = self._generate_pairs(det_mat.shape[0])
+
+        if deg_freedom == None:
+            # judge the existence of the degree of freedom
+            if hasattr(self, 'deg_freedom'):
+                deg_freedom = self.deg_freedom
+            else:
+                raise ValueError(
+                    "Degree of freedom is not specified. Please specify the degree of freedom.")
+
+        Q = sto_mat @ sto_mat.T
+        segments = [sorted(item) for item in segments]
+        segments_num = len(segments)
+
+        if discrete_lyapunov:
+            cov = solve_discrete_lyapunov(
+                det_mat*self.dt+self.xp.eye(det_mat.shape[0]), Q*self.dt)
+        else:
+            cov = solve_continuous_lyapunov(det_mat, -Q)
+
+        inv_cov = self._inverse_symmetric_mat(cov)
+        inv_cov = self._split_matrix(inv_cov, segments)
+        cov = self._split_matrix(cov, segments)
+        det_mat = self._split_matrix(det_mat, segments)[
+            :segments_num, :]
+
+        Q = self._split_matrix(Q, segments)[
+            :segments_num, :segments_num]
+        self.Q = Q
+        diag_inv_cov = self._cal_diag_inv_cov(cov)
+        self.true_cov = cov
+        self.true_diag_inv_cov = diag_inv_cov
+        # calculate informtaion flow
+        information_flow = self._cal_information_flow(
+            det_mat, cov, diag_inv_cov)[:segments_num, :]
+
+        dH_noise = self._cal_dH_noise(
+            diag_inv_cov, Q).reshape(-1, 1)
+        normalizer = self.xp.sum(self.xp.abs(
+            information_flow), axis=1, keepdims=True) + self.xp.abs(dH_noise)
+
+        normalized_information_flow = information_flow/normalizer
+
+        information_flow_std = self._cal_information_flow_std(
+            det_mat, cov, inv_cov, diag_inv_cov, Q/self.dt, deg_freedom)
+
+        information_flow_std_origin = self._cal_information_flow_std_origin(
+            det_mat, cov, inv_cov, diag_inv_cov, Q/self.dt, deg_freedom)
+        p = (1 - norm.cdf(self.xp.abs(self.information_flow /
+                                      self.information_flow_std))) * 2  # p-value
+
+        return {
+            "information_flow": information_flow,
+            "normalized_information_flow": normalized_information_flow,
+            "segments": segments,
+            "lag_list": [1],
+            "information_flow_std": information_flow_std,
+            # use original significance test method
+            "information_flow_std_origin": information_flow_std_origin,
+            "statistics": {
+                "p99_critical_value": information_flow_std*self.conf_level_99,
+                "p95_critical_value": information_flow_std*self.conf_level_95,
+                "p90_critical_value": information_flow_std*self.conf_level_90,
+                "p": p
+            }
+        }
