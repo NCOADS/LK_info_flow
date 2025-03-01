@@ -18,6 +18,12 @@ class LinearLKInformationFlow(object):
         self.conf_level_95 = norm.ppf(0.975)  # 95% confidence level
         self.conf_level_90 = norm.ppf(0.95)   # 90% confidence level
 
+    def _generate_pairs(self, N):
+        '''
+        Generate segements for 1d subspace.
+        '''
+        return [[i, i + 1] for i in range(N)]
+
     def _split_matrix(self, matrix, segments):
         slices = [self.xp.s_[start:end] for start, end in segments]
         row_slices, col_slices = self.xp.meshgrid(
@@ -25,6 +31,34 @@ class LinearLKInformationFlow(object):
         result = self.xp.vectorize(lambda r, c: matrix[r, c], otypes=[
                                    object])(row_slices, col_slices)
         return result
+
+    def _prepare_dataset(self, ts_data, segments, lag_list=[1]):
+        '''
+        prepare for dataset for causality estimation.
+        Parameters:
+            ts_data: Time series(length of time series, number of variables).
+            segments: A list defining the row and column intervals for dividing the matrix, e.g., [(0, 5), (5, 10)], which devide the matrix into 2 segments.
+            lag_list: A list of integers representing the lag order.
+        '''
+        lag_list_length = len(lag_list)
+        assert lag_list_length > 0, f"Assertion failed: lag list must not be empty."
+        # sort
+        lag_list = sorted(lag_list)
+        lag_list_max = lag_list[-1]
+
+        delta_ts_data = (ts_data[lag_list_max:, :] -
+                         ts_data[lag_list_max - 1: -1, :]) / (self.dt)
+
+        lag = lag_list[0]
+        processed_ts_data = ts_data[lag_list_max-lag:-lag, :]
+        processed_segments = segments.copy()
+
+        for i, lag in enumerate(lag_list[1:]):
+            processed_ts_data = self.xp.hstack(
+                (processed_ts_data, ts_data[lag_list_max-lag:-lag, :]))
+            processed_segments += [[x + ts_data.shape[1] *
+                                    (i+1), y + ts_data.shape[1]*(i+1)] for x, y in segments]
+        return delta_ts_data, processed_ts_data, processed_segments
 
     def _inverse_symmetric_mat(self, mat):
         """
@@ -38,12 +72,6 @@ class LinearLKInformationFlow(object):
             print("Warning: Matrix is ill-conditioned. Using pseudo-inverse instead.")
             inverse_mat = self.xp.linalg.pinv(mat)
             return (inverse_mat+inverse_mat.T)/2
-
-    def _generate_pairs(self, N):
-        '''
-        Generate segements for 1d subspace.
-        '''
-        return [[i, i + 1] for i in range(N)]
 
     def _cal_diag_inv_cov(self, cov):
         diag_inv_cov = self.xp.vectorize(lambda x: self._inverse_symmetric_mat(
@@ -89,88 +117,6 @@ class LinearLKInformationFlow(object):
         information_flow_variance = self.xp.vectorize(
             cal_block_cal_variance_, otypes=[float])(rows, cols)
         return self.xp.sqrt(information_flow_variance)
-
-    def _prepare_dataset(self, ts_data, segments, lag_list=[1]):
-        '''
-        prepare for dataset for causality estimation.
-        Parameters:
-            ts_data: Time series(length of time series, number of variables).
-            segments: A list defining the row and column intervals for dividing the matrix, e.g., [(0, 5), (5, 10)], which devide the matrix into 2 segments.
-            lag_list: A list of integers representing the lag order.
-        '''
-        lag_list_length = len(lag_list)
-        assert lag_list_length > 0, f"Assertion failed: lag list must not be empty."
-        # sort
-        lag_list = sorted(lag_list)
-        lag_list_max = lag_list[-1]
-
-        delta_ts_data = (ts_data[lag_list_max:, :] -
-                         ts_data[lag_list_max - 1: -1, :]) / (self.dt)
-
-        lag = lag_list[0]
-        processed_ts_data = ts_data[lag_list_max-lag:-lag, :]
-        processed_segments = segments.copy()
-
-        for i, lag in enumerate(lag_list[1:]):
-            processed_ts_data = self.xp.hstack(
-                (processed_ts_data, ts_data[lag_list_max-lag:-lag, :]))
-            processed_segments += [[x + ts_data.shape[1] *
-                                    (i+1), y + ts_data.shape[1]*(i+1)] for x, y in segments]
-        return delta_ts_data, processed_ts_data, processed_segments
-
-    def bootstrap_estimate(self, ts_data, lag_list=[1], segments=None, bootstrap_num=1000, output_all=False):
-        '''
-        bootstrap method
-        Parameters:
-            ts_data: Time series(length of time series, number of variables).
-            segments: A list defining the row and column intervals for dividing the matrix
-            bootstrap_num: Number of bootstrap samples.
-            output_all: If True, will output the original list.
-        '''
-        ts_length, ts_var_num = ts_data.shape
-        assert ts_length > ts_var_num, f"Assertion failed: length of time series ({ts_length}) must be greater than the number of variables ({ts_var_num})."
-        if segments == None:
-            segments = self._generate_pairs(ts_var_num)
-        segments = [sorted(item) for item in segments]
-        segments_num = len(segments)
-
-        # ts_data = (ts_data - self.xp.mean(ts_data, axis=0)) / \
-        #     self.xp.std(ts_data, axis=0)
-
-        delta_ts_data, ts_data_process, segments = self._prepare_dataset(
-            ts_data, segments, lag_list)
-        x_centered = ts_data_process - self.xp.mean(ts_data_process, axis=0)
-        ts_length = x_centered.shape[0]
-        information_flow_list = []
-        t = track(range(bootstrap_num), leave=False, desc="Bootstrap Progress")
-        for _ in t:
-            # 生成相同的随机索引
-            indices = self.xp.random.choice(
-                range(ts_length), size=ts_length, replace=True)
-            # 根据生成的索引抽取对应的样本
-            x_centered_sample = x_centered[indices]
-            delta_ts_data_sample = delta_ts_data[indices]
-            cov = x_centered_sample.T @ x_centered_sample / \
-                (ts_length - 1)  # covariance matrix
-            # TODO: further develop for significance test for subspace causality
-            invC_mul_dC, _, _, _ = self.xp.linalg.lstsq(
-                x_centered_sample, delta_ts_data_sample, rcond=None)
-            cov = self._split_matrix(cov, segments)
-            invC_mul_dC = self._split_matrix(invC_mul_dC.T, segments)[
-                :segments_num, :]
-            # invariance of block diagonal matrix
-            diag_inv_cov = self._cal_diag_inv_cov(cov)
-            # calculate informtaion flow
-            information_flow = self._cal_information_flow(
-                invC_mul_dC, cov, diag_inv_cov)[:segments_num, :]
-            information_flow_list.append(information_flow)
-
-        information_flow_mean = self.xp.mean(information_flow_list, axis=0)
-        information_flow_std_error = self.xp.std(information_flow_list, axis=0)
-        if output_all:
-            return {"bootstrap_information_flow_mean": information_flow_mean, "bootstrap_information_flow_std": information_flow_std_error, "bootstrap_information_flow_list": information_flow_list}
-        else:
-            return {"bootstrap_information_flow_mean": information_flow_mean, "bootstrap_information_flow_std": information_flow_std_error,  "bootstrap_information_flow_list": None}
 
     def causality_estimate(self, ts_data, lag_list=[1], segments=None, significance_test=True):
         """
@@ -263,47 +209,6 @@ class LinearLKInformationFlow(object):
             self.p = (1 - norm.cdf(self.xp.abs(self.information_flow /
                       self.information_flow_std))) * 2  # p-value
 
-    def get_dict(self):
-        """
-        Get the information flow and normalized information flow.
-        Returns:
-            information_flow: Information flow matrix. (i,j) represents (j → i)'s information flow.
-            normalized_information_flow: Normalized information flow matrix.
-            segments: Segments of the matrix.
-            lag_list: Lag list of the matrix.
-
-
-            information_flow_std: Standard deviation of information flow.
-            information_flow_std_origin: Standard deviation of information flow for original method.
-            statistics: Statistics of the information flow.
-                p99_critical_value: 99% critical value.
-                p95_critical_value: 95% critical value.
-                p90_critical_value: 90% critical value.
-                p: p-value of the information flow.
-        """
-        if hasattr(self, 'information_flow'):
-            state_dict = {
-                "information_flow": self.information_flow,
-                "normalized_information_flow": self.normalized_information_flow,
-                "segments": self.segments,
-                "lag_list": self.lag_list
-            }
-            if self.significance_test:
-                state_dict.update({
-                    "information_flow_std": self.information_flow_std,
-                    # use original significance test method
-                    "information_flow_std_origin": self.information_flow_std_origin,
-                    "statistics": {
-                        "p99_critical_value": self.information_flow_std*self.conf_level_99,
-                        "p95_critical_value": self.information_flow_std*self.conf_level_95,
-                        "p90_critical_value": self.information_flow_std*self.conf_level_90,
-                        "p": self.p
-                    }
-                })
-            return state_dict
-        else:
-            return "Causality estimate has not been run yet. Please run 'causality_estimate' first!"
-
     def real_information_flow_linear_case(self, det_mat, sto_mat, deg_freedom=None, segments=None, discrete_lyapunov=True) -> dict:
         if discrete_lyapunov:
             from scipy.linalg import solve_discrete_lyapunov
@@ -389,3 +294,95 @@ class LinearLKInformationFlow(object):
                 "p": p
             }
         }
+
+    def bootstrap_estimate(self, ts_data, lag_list=[1], segments=None, bootstrap_num=1000, output_all=False) -> dict:
+        '''
+        bootstrap method, estimate the information flow.
+        Parameters:
+            ts_data: Time series(length of time series, number of variables).
+            segments: A list defining the row and column intervals for dividing the matrix
+            bootstrap_num: Number of bootstrap samples.
+            output_all: If True, will output the original list.
+        '''
+        ts_length, ts_var_num = ts_data.shape
+        assert ts_length > ts_var_num, f"Assertion failed: length of time series ({ts_length}) must be greater than the number of variables ({ts_var_num})."
+        if segments == None:
+            segments = self._generate_pairs(ts_var_num)
+        segments = [sorted(item) for item in segments]
+        segments_num = len(segments)
+
+        # ts_data = (ts_data - self.xp.mean(ts_data, axis=0)) / \
+        #     self.xp.std(ts_data, axis=0)
+
+        delta_ts_data, ts_data_process, segments = self._prepare_dataset(
+            ts_data, segments, lag_list)
+        x_centered = ts_data_process - self.xp.mean(ts_data_process, axis=0)
+        ts_length = x_centered.shape[0]
+        information_flow_list = []
+        t = track(range(bootstrap_num), leave=False, desc="Bootstrap Progress")
+        for _ in t:
+            indices = self.xp.random.choice(
+                range(ts_length), size=ts_length, replace=True)
+            x_centered_sample = x_centered[indices]
+            delta_ts_data_sample = delta_ts_data[indices]
+            cov = x_centered_sample.T @ x_centered_sample / \
+                (ts_length - 1)  # covariance matrix
+            invC_mul_dC, _, _, _ = self.xp.linalg.lstsq(
+                x_centered_sample, delta_ts_data_sample, rcond=None)
+            cov = self._split_matrix(cov, segments)
+            invC_mul_dC = self._split_matrix(invC_mul_dC.T, segments)[
+                :segments_num, :]
+            # invariance of block diagonal matrix
+            diag_inv_cov = self._cal_diag_inv_cov(cov)
+            # calculate informtaion flow
+            information_flow = self._cal_information_flow(
+                invC_mul_dC, cov, diag_inv_cov)[:segments_num, :]
+            information_flow_list.append(information_flow)
+
+        information_flow_mean = self.xp.mean(information_flow_list, axis=0)
+        information_flow_std_error = self.xp.std(information_flow_list, axis=0)
+        if output_all:
+            return {"bootstrap_information_flow_mean": information_flow_mean, "bootstrap_information_flow_std": information_flow_std_error, "bootstrap_information_flow_list": information_flow_list}
+        else:
+            return {"bootstrap_information_flow_mean": information_flow_mean, "bootstrap_information_flow_std": information_flow_std_error,  "bootstrap_information_flow_list": None}
+
+    def get_dict(self):
+        """
+        Get the information flow and normalized information flow.
+        Returns:
+            information_flow: Information flow matrix. (i,j) represents (j → i)'s information flow.
+            normalized_information_flow: Normalized information flow matrix.
+            segments: Segments of the matrix.
+            lag_list: Lag list of the matrix.
+
+
+            information_flow_std: Standard deviation of information flow.
+            information_flow_std_origin: Standard deviation of information flow for original method.
+            statistics: Statistics of the information flow.
+                p99_critical_value: 99% critical value.
+                p95_critical_value: 95% critical value.
+                p90_critical_value: 90% critical value.
+                p: p-value of the information flow.
+        """
+        if hasattr(self, 'information_flow'):
+            state_dict = {
+                "information_flow": self.information_flow,
+                "normalized_information_flow": self.normalized_information_flow,
+                "segments": self.segments,
+                "lag_list": self.lag_list
+            }
+            if self.significance_test:
+                state_dict.update({
+                    "information_flow_std": self.information_flow_std,
+                    # use original significance test method
+                    "information_flow_std_origin": self.information_flow_std_origin,
+                    "statistics": {
+                        "p99_critical_value": self.information_flow_std*self.conf_level_99,
+                        "p95_critical_value": self.information_flow_std*self.conf_level_95,
+                        "p90_critical_value": self.information_flow_std*self.conf_level_90,
+                        "p": self.p
+                    }
+                })
+            return state_dict
+        else:
+            return "Causality estimate has not been run yet. Please run 'causality_estimate' first!"
