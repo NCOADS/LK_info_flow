@@ -1,6 +1,15 @@
 # LK_info_flow
 
 
+### intsall
+
+    git clone https://github.com/NCOADS/LK_info_flow.git
+    git clone git@github.com:NCOADS/LK_info_flow.git
+ 
+
+
+### Instruction
+
 1. Class 实例化
 
     ```
