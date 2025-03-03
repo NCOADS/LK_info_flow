@@ -32,11 +32,11 @@ class LinearLKInformationFlow(object):
                                    object])(row_slices, col_slices)
         return result
 
-    def _prepare_dataset(self, ts_data, segments, lag_list=[1]):
+    def _prepare_dataset(self, ts_data_list, segments, lag_list=[1]):
         '''
         prepare for dataset for causality estimation.
         Parameters:
-            ts_data: Time series(length of time series, number of variables).
+            ts_data_list: Time series(length of time series, number of variables) list.
             segments: A list defining the row and column intervals for dividing the matrix, e.g., [(0, 5), (5, 10)], which devide the matrix into 2 segments.
             lag_list: A list of integers representing the lag order.
         '''
@@ -45,19 +45,29 @@ class LinearLKInformationFlow(object):
         # sort
         lag_list = sorted(lag_list)
         lag_list_max = lag_list[-1]
+        delta_ts_data_list = []
+        processed_ts_data_list = []
+        for ts_data in ts_data_list:
+            delta_ts_data = (ts_data[lag_list_max:, :] -
+                             ts_data[lag_list_max - 1: -1, :]) / (self.dt)
+            delta_ts_data_list.append(delta_ts_data)
 
-        delta_ts_data = (ts_data[lag_list_max:, :] -
-                         ts_data[lag_list_max - 1: -1, :]) / (self.dt)
+            lag = lag_list[0]
+            processed_ts_data_ = ts_data[lag_list_max-lag:-lag, :]
 
-        lag = lag_list[0]
-        processed_ts_data = ts_data[lag_list_max-lag:-lag, :]
+            for i, lag in enumerate(lag_list[1:]):
+                processed_ts_data_ = self.xp.hstack(
+                    (processed_ts_data_, ts_data[lag_list_max-lag:-lag, :]))
+
+            processed_ts_data_list.append(processed_ts_data_)
+
         processed_segments = segments.copy()
-
         for i, lag in enumerate(lag_list[1:]):
-            processed_ts_data = self.xp.hstack(
-                (processed_ts_data, ts_data[lag_list_max-lag:-lag, :]))
             processed_segments += [[x + ts_data.shape[1] *
                                     (i+1), y + ts_data.shape[1]*(i+1)] for x, y in segments]
+
+        delta_ts_data = self.xp.vstack(delta_ts_data_list)
+        processed_ts_data = self.xp.vstack(processed_ts_data_list)
         return delta_ts_data, processed_ts_data, processed_segments
 
     def _inverse_symmetric_mat(self, mat):
@@ -118,36 +128,32 @@ class LinearLKInformationFlow(object):
             cal_block_cal_variance_, otypes=[float])(rows, cols)
         return self.xp.sqrt(information_flow_variance)
 
-    def causality_estimate(self, ts_data, lag_list=[1], segments=None, significance_test=True):
+    def causality_estimate(self, ts_data_list, lag_list=[1], segments=None, significance_test=True) -> None:
         """
-        Calculate Liang-Kleeman information flow under linear conditions with significance test.
+        Calculate Liang-Kleeman information flow under linear conditions with significance test. Get the result by calling **get_dict()**.
         Parameters:
-            ts_data: Time series(length of time series, number of variables).
+            ts_data_list: Time series list(length of time series, number of variables), each elements in the list is supposed to follow the same dynamical system.
             lag_list: A list of integers representing the lag order.
             segments: A list defining the row and column intervals for dividing the matrix, e.g., [[0, 5], [5, 10]],[[0,1],[1,2],[2,3]].
             significance_test: If True, will perform significance test.
         """
         self.significance_test = significance_test
-        ts_length, ts_var_num = ts_data.shape
+        ts_length, ts_var_num = ts_data_list[0].shape
 
-        assert ts_length > ts_var_num, f"Assertion failed: length of time series ({ts_length}) must be greater than the number of variables ({ts_var_num})."
         if segments == None:
             segments = self._generate_pairs(ts_var_num)
-
         segments = [sorted(item) for item in segments]
         segments_num = len(segments)
-        # delta_ts_data = (ts_data[1:,:] - ts_data[:ts_length - 1, :]) / (self.dt)
-
-        # normalize
-        # ts_data = (ts_data - self.xp.mean(ts_data, axis=0)) / \
-        #     self.xp.std(ts_data, axis=0)
 
         delta_ts_data, ts_data_process, segments = self._prepare_dataset(
-            ts_data, segments, lag_list)
+            ts_data_list, segments, lag_list)
+
         self.segments = segments
         self.lag_list = lag_list
 
         ts_length = ts_data_process.shape[0]  # overwrite ts_length
+        assert ts_length > ts_var_num, f"Assertion failed: length of time series ({ts_length}) must be greater than the number of variables ({ts_var_num})."
+
         self.deg_freedom = ts_length - ts_var_num
         cov = self.xp.cov(ts_data_process.T)
         if significance_test:
@@ -155,7 +161,6 @@ class LinearLKInformationFlow(object):
             inv_cov = self._split_matrix(inv_cov, segments)
 
         # estimator of dynamic system matrix : A
-        # TODO: further develop for significance test for subspace causality
         ones_column = self.xp.ones((ts_data_process.shape[0], 1))  # 添加常数列
         ts_data_process_augmented = self.xp.concatenate(
             [ts_data_process, ones_column], axis=1)
@@ -295,17 +300,16 @@ class LinearLKInformationFlow(object):
             }
         }
 
-    def bootstrap_estimate(self, ts_data, lag_list=[1], segments=None, bootstrap_num=1000, output_all=False) -> dict:
+    def bootstrap_estimate(self, ts_data_list, lag_list=[1], segments=None, bootstrap_num=1000, output_all=False) -> dict:
         '''
         bootstrap method, estimate the information flow.
         Parameters:
-            ts_data: Time series(length of time series, number of variables).
+            ts_data_list: Time series(length of time series, number of variables) list.
             segments: A list defining the row and column intervals for dividing the matrix
             bootstrap_num: Number of bootstrap samples.
             output_all: If True, will output the original list.
         '''
-        ts_length, ts_var_num = ts_data.shape
-        assert ts_length > ts_var_num, f"Assertion failed: length of time series ({ts_length}) must be greater than the number of variables ({ts_var_num})."
+        ts_length, ts_var_num = ts_data_list[0].shape
         if segments == None:
             segments = self._generate_pairs(ts_var_num)
         segments = [sorted(item) for item in segments]
@@ -315,9 +319,11 @@ class LinearLKInformationFlow(object):
         #     self.xp.std(ts_data, axis=0)
 
         delta_ts_data, ts_data_process, segments = self._prepare_dataset(
-            ts_data, segments, lag_list)
+            ts_data_list, segments, lag_list)
         x_centered = ts_data_process - self.xp.mean(ts_data_process, axis=0)
         ts_length = x_centered.shape[0]
+        assert ts_length > ts_var_num, f"Assertion failed: length of time series ({ts_length}) must be greater than the number of variables ({ts_var_num})."
+
         information_flow_list = []
         t = track(range(bootstrap_num), leave=False, desc="Bootstrap Progress")
         for _ in t:
