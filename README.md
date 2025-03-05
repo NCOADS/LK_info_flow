@@ -3,9 +3,11 @@
 
 ### intsall
 
-    git clone https://github.com/NCOADS/LK_info_flow.git
     git clone git@github.com:NCOADS/LK_info_flow.git
- 
+    cd LK_info_flow
+    conda create -n lkif python=3.9
+    conda activate lkif
+    pip install -r requirements.txt
 
 
 ### Instruction
