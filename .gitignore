@@ -7,4 +7,4 @@ __pycache__/
 figs/
 *.eps
 
-test.ipynb
+test.*
