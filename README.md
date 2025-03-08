@@ -18,7 +18,7 @@
     from lkif import LinearLKInformationFlow
     import numpy as np # cupy
     dt = 1 # time interval 间隔时间
-    lkif = LinearLKInformationFlow(np,dt)
+    lkif_linear = LinearLKInformationFlow(np,dt)
     ```
 
 
@@ -34,20 +34,20 @@
 
     ```
     ## XX为数据 (变量个数 * 时间序列长度)
-    lkif.causality_estimate([XX[:,-15000:].T], lag_list=[1])
+    lkif_linear.causality_estimate([XX[:,-15000:].T], lag_list=[1])
 
     ## Panel Data 输入, 滞后考虑 -1,-2
-    lkif.causality_estimate([XX[:,-15000:].T,XX[:,-30000:-15000].T], lag_list=[1,2])
+    lkif_linear.causality_estimate([XX[:,-15000:].T,XX[:,-30000:-15000].T], lag_list=[1,2])
 
     ## 子空间检验，子空间 (0,1,2,3,4) 和 (5,6,7,8,9)
     segments = [(0,5),(5,10)]
-    lkif.causality_estimate([XX[:,-15000:].T,XX[:,-30000:-15000].T], lag_list=[1,2], segments = segments)
+    lkif_linear.causality_estimate([XX[:,-15000:].T,XX[:,-30000:-15000].T], lag_list=[1,2], segments = segments)
     ```
 
 4. 获取结果
 
     ```
-    result_dict = lkif.get_dict()
+    result_dict = lkif_linear.get_dict()
     ```
 
 5. 附加：bootstrap方法 & 真实信息流（已知动力系统，稳态下的信息流）
