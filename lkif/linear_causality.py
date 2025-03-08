@@ -2,7 +2,7 @@ import numpy
 from scipy.stats import norm
 import sys
 from .utils import track
-
+import warnings
 
 class LinearLKInformationFlow(object):
     def __init__(self, xp=numpy, dt=1) -> None:
@@ -74,7 +74,7 @@ class LinearLKInformationFlow(object):
         """
         Calculate the inverse of a symmetric matrix.
         """
-        if self.xp.linalg.cond(mat) < 1/sys.float_info.epsilon:
+        if numpy.linalg.cond(mat) < 1/sys.float_info.epsilon:
             inverse_mat = self.xp.linalg.inv(mat)
             return (inverse_mat+inverse_mat.T)/2
         else:
@@ -235,13 +235,14 @@ class LinearLKInformationFlow(object):
         if segments == None:
             segments = self._generate_pairs(det_mat.shape[0])
 
+        significance_test = True
         if deg_freedom == None:
             # judge the existence of the degree of freedom
             if hasattr(self, 'deg_freedom'):
                 deg_freedom = self.deg_freedom
             else:
-                raise ValueError(
-                    "Degree of freedom is not specified. Please specify the degree of freedom.")
+                significance_test = False
+                warnings.warn("Degree of freedom is not specified. Will not calculate Std.", UserWarning)
 
         Q = sto_mat @ sto_mat.T
         segments = [sorted(item) for item in segments]
@@ -276,29 +277,37 @@ class LinearLKInformationFlow(object):
 
         normalized_information_flow = information_flow/normalizer
 
-        information_flow_std = self._cal_information_flow_std(
-            det_mat, cov, inv_cov, diag_inv_cov, Q/self.dt, deg_freedom)
+        if significance_test:
+            information_flow_std = self._cal_information_flow_std(
+                det_mat, cov, inv_cov, diag_inv_cov, Q/self.dt, deg_freedom)
 
-        information_flow_std_origin = self._cal_information_flow_std_origin(
-            det_mat, cov, inv_cov, diag_inv_cov, Q/self.dt, deg_freedom)
-        p = (1 - norm.cdf(self.xp.abs(self.information_flow /
-                                      self.information_flow_std))) * 2  # p-value
-
+            information_flow_std_origin = self._cal_information_flow_std_origin(
+                det_mat, cov, inv_cov, diag_inv_cov, Q/self.dt, deg_freedom)
+            p = (1 - norm.cdf(self.xp.abs(self.information_flow /
+                                        self.information_flow_std))) * 2  # p-value
+            
+            return {
+                    "information_flow": information_flow,
+                    "normalized_information_flow": normalized_information_flow,
+                    "segments": segments,
+                    "lag_list": [1],
+                    "information_flow_std": information_flow_std,
+                    # use original significance test method
+                    "information_flow_std_origin": information_flow_std_origin,
+                    "statistics": {
+                        "p99_critical_value": information_flow_std*self.conf_level_99,
+                        "p95_critical_value": information_flow_std*self.conf_level_95,
+                        "p90_critical_value": information_flow_std*self.conf_level_90,
+                        "p": p
+                    }
+                }
+        
         return {
-            "information_flow": information_flow,
-            "normalized_information_flow": normalized_information_flow,
-            "segments": segments,
-            "lag_list": [1],
-            "information_flow_std": information_flow_std,
-            # use original significance test method
-            "information_flow_std_origin": information_flow_std_origin,
-            "statistics": {
-                "p99_critical_value": information_flow_std*self.conf_level_99,
-                "p95_critical_value": information_flow_std*self.conf_level_95,
-                "p90_critical_value": information_flow_std*self.conf_level_90,
-                "p": p
+                "information_flow": information_flow,
+                "normalized_information_flow": normalized_information_flow,
+                "segments": segments,
+                "lag_list": [1]
             }
-        }
 
     def bootstrap_estimate(self, ts_data_list, lag_list=[1], segments=None, bootstrap_num=1000, output_all=False) -> dict:
         '''
