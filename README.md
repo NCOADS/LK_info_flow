@@ -15,7 +15,7 @@
 1. Class 实例化
 
     ```
-    from src.linear_causality import LinearLKInformationFlow
+    from lkif import LinearLKInformationFlow
     import numpy as np # cupy
     dt = 1 # time interval 间隔时间
     lkif = LinearLKInformationFlow(np,dt)
