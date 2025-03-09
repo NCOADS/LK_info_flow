@@ -16,9 +16,9 @@
 
     ```
     from lkif import LinearLKInformationFlow
-    import numpy as np # cupy
+    import numpy as np 
     dt = 1 # time interval 间隔时间
-    lkif_linear = LinearLKInformationFlow(np,dt)
+    lkif_linear = LinearLKInformationFlow(dt)
     ```
 
 
