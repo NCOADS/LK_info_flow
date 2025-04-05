@@ -12,42 +12,40 @@
 
 ### Instruction
 
-1. Class 实例化
+1. Class
 
     ```
     from lkif import LinearLKInformationFlow
     import numpy as np 
-    dt = 1 # time interval 间隔时间
+    dt = 1 # time interval 
     lkif_linear = LinearLKInformationFlow(dt)
     ```
 
 
-2. 数据输入要求
+2. Data input requirements
     
-    + 输入为数据列表list，用于兼容 Panel Data
-        
-        + 数据列表中的每一个 element 都服从同一个 dynamical system 
+   + The input is a data list (`list`), designed to support panel data. 
 
-        + 每一个 element 的 shape 都是 (时间序列长度 * 变量个数)
+        + Each element in the list follows the same dynamical system.  
 
-3. 基于显著性检验的检验
+        + The shape of each element is (time series length × number of variables).
+
+3. Significance test
 
     ```
-    ## XX为数据 (变量个数 * 时间序列长度)
+    ## XX is the data with shape (number of variables × time series length)
     lkif_linear.causality_estimate([XX[:,-15000:].T], lag_list=[1])
 
-    ## Panel Data 输入, 滞后考虑 -1,-2
+    ## panel data input with lag terms of -1 and -2 considered.
     lkif_linear.causality_estimate([XX[:,-15000:].T,XX[:,-30000:-15000].T], lag_list=[1,2])
 
-    ## 子空间检验，子空间 (0,1,2,3,4) 和 (5,6,7,8,9)
+    ## significance test of subspace-wise information flow with subspaces α₁ = (0,1,2,3,4) and α₂ = (5,6,7,8,9).
     segments = [(0,5),(5,10)]
     lkif_linear.causality_estimate([XX[:,-15000:].T,XX[:,-30000:-15000].T], lag_list=[1,2], segments = segments)
     ```
 
-4. 获取结果
+4. Results
 
     ```
     result_dict = lkif_linear.get_dict()
     ```
-
-5. 附加：bootstrap方法 & 真实信息流（已知动力系统，稳态下的信息流）
