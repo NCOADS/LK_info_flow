@@ -16,7 +16,7 @@ class LinearLKInformationFlow(object):
         self.conf_level_95 = norm.ppf(0.975)  # 95% confidence level
         self.conf_level_90 = norm.ppf(0.95)   # 90% confidence level
 
-    def causality_estimate(self, ts_data_list, lag_list=[1], segments=None, significance_test=True) -> None:
+    def causality_estimate(self, ts_data_list, euler_step=1, lag_list=[1], segments=None, significance_test=True) -> None:
         """
         Calculate Liang-Kleeman information flow under linear conditions with significance test. Get the result by calling **get_dict()**.
         Parameters:
@@ -34,7 +34,7 @@ class LinearLKInformationFlow(object):
         segments_num = len(segments)
 
         delta_ts_data, ts_data_process, segments = prepare_dataset(
-            ts_data_list, segments, lag_list, self.dt)
+            ts_data_list, segments, euler_step, lag_list, self.dt)
 
         self.segments = segments
         self.lag_list = lag_list
@@ -56,7 +56,7 @@ class LinearLKInformationFlow(object):
         self.delta_ts_data = delta_ts_data
         invC_mul_dC, _, _, _ = np.linalg.lstsq(
             ts_data_process_augmented, delta_ts_data, rcond=None)
-        self.invC_mul_dC_ = invC_mul_dC.copy()
+        # self.invC_mul_dC_ = invC_mul_dC.copy()
         # error square mean
         error_vec = delta_ts_data - ts_data_process_augmented@invC_mul_dC
         error_square_mean = error_vec.T@error_vec/self.deg_freedom
@@ -197,7 +197,7 @@ class LinearLKInformationFlow(object):
                 "lag_list": [1]
             }
 
-    def bootstrap_estimate(self, ts_data_list, lag_list=[1], segments=None, bootstrap_num=1000, output_all=False) -> dict:
+    def bootstrap_estimate(self, ts_data_list, euler_step=1, lag_list=[1], segments=None, bootstrap_num=1000, output_all=False) -> dict:
         '''
         bootstrap method, estimate the information flow.
         Parameters:
@@ -216,7 +216,7 @@ class LinearLKInformationFlow(object):
         #     np.std(ts_data, axis=0)
 
         delta_ts_data, ts_data_process, segments = prepare_dataset(
-            ts_data_list, segments, lag_list, self.dt)
+            ts_data_list, segments, euler_step, lag_list, self.dt)
         x_centered = ts_data_process - np.mean(ts_data_process, axis=0)
         ts_length = x_centered.shape[0]
         assert ts_length > ts_var_num, f"Assertion failed: length of time series ({ts_length}) must be greater than the number of variables ({ts_var_num})."

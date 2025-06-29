@@ -51,7 +51,7 @@ def cal_diag_inv_cov(cov):
         x), otypes=[object])(np.diagonal(cov))
     return diag_inv_cov
 
-def prepare_dataset(ts_data_list, segments, lag_list=[1], dt=1):
+def prepare_dataset(ts_data_list, segments, euler_step=1, lag_list=[1], dt=1):
     '''
     prepare for dataset for causality estimation.
     Parameters:
@@ -67,16 +67,16 @@ def prepare_dataset(ts_data_list, segments, lag_list=[1], dt=1):
     delta_ts_data_list = []
     processed_ts_data_list = []
     for ts_data in ts_data_list:
-        delta_ts_data = (ts_data[lag_list_max:, :] -
-                            ts_data[lag_list_max - 1: -1, :]) / (dt)
+        delta_ts_data = (ts_data[lag_list_max+euler_step-1:, :] -
+                            ts_data[lag_list_max - 1: -euler_step, :]) / (dt*euler_step)
         delta_ts_data_list.append(delta_ts_data)
 
         lag = lag_list[0]
-        processed_ts_data_ = ts_data[lag_list_max-lag:-lag, :]
+        processed_ts_data_ = ts_data[lag_list_max-lag:-lag-euler_step+1, :]
 
         for i, lag in enumerate(lag_list[1:]):
             processed_ts_data_ = np.hstack(
-                (processed_ts_data_, ts_data[lag_list_max-lag:-lag, :]))
+                (processed_ts_data_, ts_data[lag_list_max-lag:-lag-euler_step+1, :]))
 
         processed_ts_data_list.append(processed_ts_data_)
 
