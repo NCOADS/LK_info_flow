@@ -1,7 +1,7 @@
 from tqdm.auto import tqdm
 import matplotlib
 import numpy as np
-
+import scipy.linalg as la
 CLUSTER = False
 
 def set_cluster(is_cluster):
@@ -23,17 +23,34 @@ def generate_pairs(N):
         '''
         Generate segements for 1d subspace.
         '''
-        return [[i, i + 1] for i in range(N)]
+        return [[i] for i in range(N)]
+
 
 def split_matrix(matrix, segments):
-    slices = [np.s_[start:end] for start, end in segments]
-    row_slices, col_slices = np.meshgrid(
-        slices, slices, indexing="ij")
-    result = np.vectorize(lambda r, c: matrix[r, c], otypes=[
-                                object])(row_slices, col_slices)
+    n_segments = len(segments)
+    result = np.empty((n_segments, n_segments), dtype=object)
+    
+    # 使用 vectorize 处理索引对
+    def extract_block(i, j):
+        row_indices = segments[i]
+        col_indices = segments[j]
+        
+        # 过滤掉超出矩阵边界的索引
+        valid_rows = [idx for idx in row_indices if idx < matrix.shape[0]]
+        valid_cols = [idx for idx in col_indices if idx < matrix.shape[1]]
+        
+        # 如果没有有效索引，返回空数组
+        if len(valid_rows) == 0 or len(valid_cols) == 0:
+            return np.array([]).reshape(len(valid_rows), len(valid_cols))
+        
+        return matrix[np.ix_(valid_rows, valid_cols)]
+    
+    rows, cols = np.indices((n_segments, n_segments))
+    result = np.vectorize(extract_block, otypes=[object])(rows, cols)
+    
     return result
 
-def inverse_symmetric_mat(mat):
+def inverse_symmetric_mat(mat,cholesky=False):
     """
     Calculate the inverse of a symmetric matrix.
     """
@@ -43,12 +60,18 @@ def inverse_symmetric_mat(mat):
     # else:
     #     # warning
     #     print("Warning: Matrix is ill-conditioned. Using pseudo-inverse instead.")
-    inverse_mat = np.linalg.pinv(mat)
-    return (inverse_mat+inverse_mat.T)/2
+    if not cholesky:
+        inverse_mat = np.linalg.pinv(mat)
+        return (inverse_mat+inverse_mat.T)/2
+    else:
+        """高效且稳定地求对称正定矩阵的逆"""
+        c, low = la.cho_factor(mat, lower=True, check_finite=True)
+        inv_mat = la.cho_solve((c, low), np.eye(mat.shape[0]))
+        return (inv_mat + inv_mat.T) / 2
 
-def cal_diag_inv_cov(cov):
+def cal_diag_inv_cov(cov, cholesky=False):
     diag_inv_cov = np.vectorize(lambda x: inverse_symmetric_mat(
-        x), otypes=[object])(np.diagonal(cov))
+        x,cholesky), otypes=[object])(np.diagonal(cov))
     return diag_inv_cov
 
 def prepare_dataset(ts_data_list, segments, euler_step=1, lag_list=[1], dt=1):
@@ -82,8 +105,8 @@ def prepare_dataset(ts_data_list, segments, euler_step=1, lag_list=[1], dt=1):
 
     processed_segments = segments.copy()
     for i, lag in enumerate(lag_list[1:]):
-        processed_segments += [[x + ts_data.shape[1] *
-                                (i+1), y + ts_data.shape[1]*(i+1)] for x, y in segments]
+        processed_segments += [[x + ts_data.shape[1] * (i+1) for x in segment] 
+                            for segment in segments]
 
     delta_ts_data = np.vstack(delta_ts_data_list)
     processed_ts_data = np.vstack(processed_ts_data_list)
@@ -115,16 +138,4 @@ def cal_information_flow_std(invC_mul_dC, cov, inv_cov, diag_inv_cov, error_squa
     rows, cols = np.indices(invC_mul_dC.shape)
     information_flow_variance = np.vectorize(
         cal_block_cal_variance_, otypes=[float])(rows, cols)
-    return np.sqrt(information_flow_variance)
-
-def cal_information_flow_std_origin(invC_mul_dC, cov, inv_cov, diag_inv_cov, error_square_mean, n):
-    def cal_block_cal_variance_(i, j):
-        temp = cov[i, j].T@diag_inv_cov[i]
-        variance = np.trace(
-            (temp.T@inv_cov[j, j]@temp@error_square_mean[i, i]))
-        return variance/n
-
-    rows, cols = np.indices(invC_mul_dC.shape)
-    information_flow_variance = np.vectorize(
-        cal_block_cal_variance_, otypes=[float])(rows, cols)
-    return np.sqrt(information_flow_variance)
+    return np.sqrt(np.abs(information_flow_variance))
