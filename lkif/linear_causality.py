@@ -5,7 +5,7 @@ from .utils import cal_information_flow, cal_dH_noise, cal_information_flow_std
 import warnings
 
 class LinearLKInformationFlow(object):
-    def __init__(self,ts_data_list, dt=1, euler_step=1, lag_list=[1], segments=None, significance_test=True, criterion=None, max_lag=10) -> None:
+    def __init__(self, dt=1) -> None:
         """
         Parameters:
         ts_data_list: Time series list(length of time series, number of variables), each elements in the list is supposed to follow the same dynamical system.
@@ -14,15 +14,27 @@ class LinearLKInformationFlow(object):
         lag_list: A list of integers representing the lag order.
         segments: A list defining the row and column intervals for dividing the matrix, e.g., [(0,1,2),(3,4,5)]; [[0],[1],[2]]
         significance_test: If True, will perform significance test.
-        criterion: If not None, will perform automatic lag selection using the specified criterion ('AIC' or 'BIC').
-        max_lag: Maximum lag to consider when criterion is not None.
         """
         self.dt = dt
-        self.significance_test = significance_test
 
         self.conf_level_99 = norm.ppf(0.995)  # 99% confidence level
         self.conf_level_95 = norm.ppf(0.975)  # 95% confidence level
         self.conf_level_90 = norm.ppf(0.95)   # 90% confidence level
+
+
+
+    def data_init(self,ts_data_list,euler_step=1, lag_list=[1], segments=None, significance_test=True, criterion=None, max_lag=10) -> None:
+        """
+        Initialize data for causality estimation.
+        Parameters:
+            ts_data_list: Time series list(length of time series, number of variables), each elements in the list is supposed to follow the same dynamical system.
+            lag_list: A list of integers representing the lag order.
+            segments: A list defining the row and column intervals for dividing the matrix, e.g., [(0,1,2),(3,4,5)]; [[0],[1],[2]]
+            significance_test: If True, will perform significance test.
+            criterion: 'AIC' or 'BIC' for automatic lag selection. If None, use the provided lag_list.
+            max_lag: Maximum lag length for automatic lag selection.
+        """
+        self.significance_test = significance_test
 
         if not isinstance(ts_data_list, list):
             ts_data_list = [ts_data_list]
@@ -34,6 +46,8 @@ class LinearLKInformationFlow(object):
             self.select_optimal_lag(ts_data_list, max_lag=max_lag, criterion=criterion, euler_step=euler_step, segments=segments)
         
         self.covariance_estimate()
+
+
 
     def prepare_dataset(self,ts_data_list,euler_step=1, lag_list=[1], segments=None) -> None:
         """
