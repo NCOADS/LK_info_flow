@@ -23,7 +23,7 @@ class LinearLKInformationFlow(object):
 
 
 
-    def data_init(self,ts_data_list,euler_step=1, lag_list=[1], segments=None, significance_test=True, criterion=None, max_lag=10) -> None:
+    def data_init(self,ts_data_list,euler_step=1, lag_list=[1], segments=None, significance_test=True, criterion=None, max_lag=10, lag_interval=1) -> None:
         """
         Initialize data for causality estimation.
         Parameters:
@@ -43,7 +43,7 @@ class LinearLKInformationFlow(object):
             self.prepare_dataset(ts_data_list,euler_step, lag_list, segments)
             self.linear_dynamic_estimate()
         else:
-            self.select_optimal_lag(ts_data_list, max_lag=max_lag, criterion=criterion, euler_step=euler_step, segments=segments)
+            self.select_optimal_lag(ts_data_list, max_lag=max_lag, criterion=criterion, euler_step=euler_step, segments=segments, lag_interval=lag_interval)
         
         self.covariance_estimate()
 
@@ -98,7 +98,7 @@ class LinearLKInformationFlow(object):
         self.error_square_mean = error_square_mean
     
     
-    def select_optimal_lag(self, ts_data_list, max_lag=10, criterion='BIC', euler_step=1, segments=None):
+    def select_optimal_lag(self, ts_data_list, max_lag=10, criterion='BIC', euler_step=1, segments=None,lag_interval=3):
         """
         使用 AIC 或 BIC 准则自动选择最优 lag 长度
         
@@ -108,7 +108,7 @@ class LinearLKInformationFlow(object):
             criterion: 'AIC' 或 'BIC'
             euler_step: 欧拉步长
             segments: 分段定义
-        
+            lag_interval: lag 的间隔，默认为 1
         Returns:
             best_lag_list: 最优的 lag 列表
             ic_values: 每个 lag 对应的信息准则值
@@ -117,7 +117,7 @@ class LinearLKInformationFlow(object):
         lag_configs = []
         
         for lag_len in track(range(1, max_lag + 1), desc="Selecting optimal lag"):
-            lag_list = list(range(1, lag_len + 1))
+            lag_list = list(range(1, lag_len * lag_interval + 1, lag_interval))
             lag_configs.append(lag_list)
             
             # 准备数据集
