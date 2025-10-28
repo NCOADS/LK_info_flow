@@ -164,39 +164,6 @@ class LinearLKInformationFlow(object):
         self.cov = cov
 
 
-    def causality_estimate_takens(self) -> None:
-        """
-        A quick way to get the causality estimate without a significance_test.
-        Mostly used in Takens embedding.
-        """
-        cov = split_matrix(self.cov, self.original_segments)
-        invC_mul_dC = split_matrix(self.invC_mul_dC, self.original_segments)[
-            :self.segments_num, :self.segments_num]
-        error_square_mean = split_matrix(self.error_square_mean, self.original_segments)[
-            :self.segments_num, :self.segments_num]
-
-        # invariance of block diagonal matrix
-        diag_inv_cov = cal_diag_inv_cov(cov)
-        self.diag_inv_cov = diag_inv_cov
-        # calculate informtaion flow
-
-        information_flow = cal_information_flow(
-            invC_mul_dC, cov, diag_inv_cov)[:self.segments_num, :]
-        self.information_flow = information_flow
-
-        # calculate normalized information flow w.r to local
-        dH_noise = cal_dH_noise(
-            diag_inv_cov, error_square_mean).reshape(-1, 1)
-        normalizer = np.sum(np.abs(
-            information_flow), axis=1, keepdims=True) + np.abs(dH_noise)
-        normalized_information_flow = information_flow/normalizer
-        self.dH_noise = dH_noise
-        self.normalizer = normalizer
-        self.normalized_information_flow = normalized_information_flow
-
-
-
-
     def causality_estimate(self) -> None:
         """
         Calculate Liang-Kleeman information flow under linear conditions with significance test. Get the result by calling **get_dict()**.
