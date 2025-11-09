@@ -192,7 +192,7 @@ class LinearLKInformationFlow(object):
 
         # calculate normalized information flow
         dH_noise = cal_dH_noise(
-            diag_inv_cov, error_square_mean).reshape(-1, 1)
+            diag_inv_cov, error_square_mean, self.dt).reshape(-1, 1)
         normalizer = np.sum(np.abs(
             information_flow), axis=1, keepdims=True) + np.abs(dH_noise)
         normalized_information_flow = information_flow/normalizer

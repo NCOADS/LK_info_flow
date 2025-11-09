@@ -119,11 +119,11 @@ def cal_information_flow(invC_mul_dC, cov, diag_inv_cov):
         cal_block_information_flow_, otypes=[float])(rows, cols)
     return information_flow
 
-def cal_dH_noise(diag_inv_cov, error_square_mean):
+def cal_dH_noise(diag_inv_cov, error_square_mean, dt):
     def cal_block_dH_noise_(i):
         return np.trace(error_square_mean[i, i] @ diag_inv_cov[i])
     dH_noise = np.vectorize(cal_block_dH_noise_, otypes=[float])(
-        np.arange(error_square_mean.shape[0])) * 1/2
+        np.arange(error_square_mean.shape[0])) * 1/2 * dt
     return dH_noise
 
 def cal_information_flow_std(invC_mul_dC, cov, inv_cov, diag_inv_cov, error_square_mean, n):
