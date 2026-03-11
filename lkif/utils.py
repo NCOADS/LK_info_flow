@@ -2,6 +2,7 @@ from tqdm.auto import tqdm
 import matplotlib
 import numpy as np
 import scipy.linalg as la
+import warnings
 CLUSTER = False
 
 def set_cluster(is_cluster):
@@ -50,7 +51,7 @@ def split_matrix(matrix, segments):
     
     return result
 
-def inverse_symmetric_mat(mat,cholesky=False):
+def inverse_symmetric_mat(mat):
     """
     Calculate the inverse of a symmetric matrix.
     """
@@ -60,18 +61,15 @@ def inverse_symmetric_mat(mat,cholesky=False):
     # else:
     #     # warning
     #     print("Warning: Matrix is ill-conditioned. Using pseudo-inverse instead.")
-    if not cholesky:
+    try:
+        inverse_mat = np.linalg.inv(mat)
+    except Exception as e:
+        warnings.warn("Matrix is ill-conditioned. Using pseudo-inverse instead.")
         inverse_mat = np.linalg.pinv(mat)
-        return (inverse_mat+inverse_mat.T)/2
-    else:
-        """高效且稳定地求对称正定矩阵的逆"""
-        c, low = la.cho_factor(mat, lower=True, check_finite=True)
-        inv_mat = la.cho_solve((c, low), np.eye(mat.shape[0]))
-        return (inv_mat + inv_mat.T) / 2
+    return (inverse_mat+inverse_mat.T)/2
 
-def cal_diag_inv_cov(cov, cholesky=False):
-    diag_inv_cov = np.vectorize(lambda x: inverse_symmetric_mat(
-        x,cholesky), otypes=[object])(np.diagonal(cov))
+def cal_diag_inv_cov(cov):
+    diag_inv_cov = np.vectorize(lambda x: inverse_symmetric_mat(x), otypes=[object])(np.diagonal(cov))
     return diag_inv_cov
 
 def prepare_dataset(ts_data_list, segments, euler_step=1, lag_list=[1], dt=1):
@@ -121,11 +119,11 @@ def cal_information_flow(invC_mul_dC, cov, diag_inv_cov):
         cal_block_information_flow_, otypes=[float])(rows, cols)
     return information_flow
 
-def cal_dH_noise(diag_inv_cov, error_square_mean):
+def cal_dH_noise(diag_inv_cov, error_square_mean, dt):
     def cal_block_dH_noise_(i):
         return np.trace(error_square_mean[i, i] @ diag_inv_cov[i])
     dH_noise = np.vectorize(cal_block_dH_noise_, otypes=[float])(
-        np.arange(error_square_mean.shape[0])) * 1/2
+        np.arange(error_square_mean.shape[0])) * 1/2 * dt
     return dH_noise
 
 def cal_information_flow_std(invC_mul_dC, cov, inv_cov, diag_inv_cov, error_square_mean, n):
