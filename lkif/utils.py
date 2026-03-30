@@ -51,25 +51,22 @@ def split_matrix(matrix, segments):
     
     return result
 
-def inverse_symmetric_mat(mat):
-    """
-    Calculate the inverse of a symmetric matrix.
-    """
-    # if numpy.linalg.cond(mat) < 1/sys.float_info.epsilon:
-    #     inverse_mat = np.linalg.inv(mat)
-    #     return (inverse_mat+inverse_mat.T)/2
-    # else:
-    #     # warning
-    #     print("Warning: Matrix is ill-conditioned. Using pseudo-inverse instead.")
-    try:
-        inverse_mat = np.linalg.inv(mat)
-    except Exception as e:
-        warnings.warn("Matrix is ill-conditioned. Using pseudo-inverse instead.")
-        inverse_mat = np.linalg.pinv(mat)
-    return (inverse_mat+inverse_mat.T)/2
+def inverse_symmetric_mat(mat, ridge_lambda=0):
+    max_diag = np.max(np.diag(mat))
+    if max_diag == 0 or np.isnan(max_diag):
+        max_diag = 1.0
 
-def cal_diag_inv_cov(cov):
-    diag_inv_cov = np.vectorize(lambda x: inverse_symmetric_mat(x), otypes=[object])(np.diagonal(cov))
+    mat_reg = mat + np.eye(mat.shape[0]) * ridge_lambda * max_diag
+    
+    try:
+        inverse_mat = np.linalg.inv(mat_reg)
+    except Exception as e:
+        inverse_mat = np.linalg.pinv(mat_reg)
+        
+    return (inverse_mat + inverse_mat.T) / 2
+
+def cal_diag_inv_cov(cov, ridge_lambda=0.):
+    diag_inv_cov = np.vectorize(lambda x: inverse_symmetric_mat(x, ridge_lambda), otypes=[object])(np.diagonal(cov))
     return diag_inv_cov
 
 def prepare_dataset(ts_data_list, segments, euler_step=1, lag_list=[1], dt=1):

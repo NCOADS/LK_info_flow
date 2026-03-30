@@ -23,7 +23,7 @@ class LinearLKInformationFlow(object):
 
 
 
-    def data_init(self,ts_data_list,euler_step=1, lag_list=[1], segments=None, significance_test=True, criterion=None, max_lag=10, lag_interval=1) -> None:
+    def data_init(self,ts_data_list,euler_step=1, lag_list=[1], segments=None, significance_test=True, criterion=None, max_lag=10, lag_interval=1, ridge_lambda=0.) -> None:
         """
         Initialize data for causality estimation.
         Parameters:
@@ -35,6 +35,7 @@ class LinearLKInformationFlow(object):
             max_lag: Maximum lag length for automatic lag selection.
         """
         self.significance_test = significance_test
+        self.ridge_lambda = ridge_lambda
 
         if not isinstance(ts_data_list, list):
             ts_data_list = [ts_data_list]
@@ -172,7 +173,7 @@ class LinearLKInformationFlow(object):
             significance_test: If True, will perform significance test.
         """
         if self.significance_test:
-            inv_cov = inverse_symmetric_mat(self.cov)
+            inv_cov = inverse_symmetric_mat(self.cov, self.ridge_lambda)
             self.inv_cov = inv_cov
 
         cov = split_matrix(self.cov, self.segments)
