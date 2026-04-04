@@ -1,250 +1,305 @@
 import numpy as np
 from scipy.stats import norm
-from .utils import track, generate_pairs, split_matrix, inverse_symmetric_mat, cal_diag_inv_cov, prepare_dataset
-from .utils import cal_information_flow, cal_dH_noise, cal_information_flow_std
-import warnings
+from .utils import (
+    track, generate_pairs, split_matrix, inverse_symmetric_mat,
+    cal_diag_inv_cov, prepare_dataset,
+    cal_information_flow, cal_dH_noise, cal_information_flow_std
+)
 
-class LinearLKInformationFlow(object):
-    def __init__(self, dt=1) -> None:
+
+class LinearLKInformationFlow:
+    """
+    Estimates Liang-Kleeman (LK) information flow under linear stochastic dynamics.
+
+    The underlying model is a multivariate linear SDE:
+        dX = A·X dt + B dW
+    where A is estimated via least squares and B·B^T is inferred from residuals.
+
+    Usage
+    -----
+    model = LinearLKInformationFlow(dt=0.1)
+    model.data_init(ts_data_list, lag_list=[1])
+    model.causality_estimate()
+    result = model.get_dict()
+    """
+
+    def __init__(self, dt: float = 1) -> None:
         """
-        Parameters:
-        ts_data_list: Time series list(length of time series, number of variables), each elements in the list is supposed to follow the same dynamical system.
-        dt: Time step between two consecutive data points.
-        euler_step: The step length used in Euler's method to approximate the derivative.
-        lag_list: A list of integers representing the lag order.
-        segments: A list defining the row and column intervals for dividing the matrix, e.g., [(0,1,2),(3,4,5)]; [[0],[1],[2]]
-        significance_test: If True, will perform significance test.
+        Parameters
+        ----------
+        dt : float
+            Time step between consecutive observations.
         """
         self.dt = dt
+        self.conf_level_99 = norm.ppf(0.995)
+        self.conf_level_95 = norm.ppf(0.975)
+        self.conf_level_90 = norm.ppf(0.95)
 
-        self.conf_level_99 = norm.ppf(0.995)  # 99% confidence level
-        self.conf_level_95 = norm.ppf(0.975)  # 95% confidence level
-        self.conf_level_90 = norm.ppf(0.95)   # 90% confidence level
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
 
-
-
-    def data_init(self,ts_data_list,euler_step=1, lag_list=[1], segments=None, significance_test=True, criterion=None, max_lag=10, lag_interval=1, ridge_lambda=0.) -> None:
+    def data_init(
+        self,
+        ts_data_list,
+        euler_step: int = 1,
+        lag_list: list = [1],
+        segments=None,
+        significance_test: bool = True,
+        criterion=None,
+        max_lag: int = 10,
+        lag_interval: int = 1,
+        ridge_lambda='auto',
+        target_cond: float = 1e3,
+    ) -> None:
         """
-        Initialize data for causality estimation.
-        Parameters:
-            ts_data_list: Time series list(length of time series, number of variables), each elements in the list is supposed to follow the same dynamical system.
-            lag_list: A list of integers representing the lag order.
-            segments: A list defining the row and column intervals for dividing the matrix, e.g., [(0,1,2),(3,4,5)]; [[0],[1],[2]]
-            significance_test: If True, will perform significance test.
-            criterion: 'AIC' or 'BIC' for automatic lag selection. If None, use the provided lag_list.
-            max_lag: Maximum lag length for automatic lag selection.
+        Prepare data and estimate the linear dynamics.
+
+        Parameters
+        ----------
+        ts_data_list : array or list of arrays, shape (T, N)
+            One or more time series from the same dynamical system.
+        euler_step : int
+            Step size used for finite-difference derivative approximation.
+        lag_list : list of int
+            Lag orders to include as regressors.
+        segments : list of list of int, optional
+            Variable groupings, e.g. [[0,1],[2,3]]. Defaults to individual variables.
+        significance_test : bool
+            Whether to compute standard errors and p-values.
+        criterion : {'AIC', 'BIC'} or None
+            If given, selects the optimal lag automatically; `lag_list` is ignored.
+        max_lag : int
+            Maximum lag length considered during automatic selection.
+        lag_interval : int
+            Stride between lags during automatic selection.
+        ridge_lambda : float or 'auto'
+            Ridge regularization for matrix inversion. 'auto' chooses the
+            smallest value that brings the condition number below `target_cond`.
+        target_cond : float
+            Condition number threshold used when `ridge_lambda='auto'`.
         """
         self.significance_test = significance_test
         self.ridge_lambda = ridge_lambda
+        self.target_cond = target_cond
 
         if not isinstance(ts_data_list, list):
             ts_data_list = [ts_data_list]
 
         if criterion is None:
-            self.prepare_dataset(ts_data_list,euler_step, lag_list, segments)
+            self.prepare_dataset(ts_data_list, euler_step, lag_list, segments)
             self.linear_dynamic_estimate()
         else:
-            self.select_optimal_lag(ts_data_list, max_lag=max_lag, criterion=criterion, euler_step=euler_step, segments=segments, lag_interval=lag_interval)
-        
+            self.select_optimal_lag(
+                ts_data_list, max_lag=max_lag, criterion=criterion,
+                euler_step=euler_step, segments=segments, lag_interval=lag_interval,
+            )
+
         self.covariance_estimate()
 
-
-
-    def prepare_dataset(self,ts_data_list,euler_step=1, lag_list=[1], segments=None) -> None:
+    def causality_estimate(self) -> None:
         """
-        Prepare dataset for causality estimation.
-        Parameters:
-            ts_data_list: Time series list(length of time series, number of variables), each elements in the list is supposed to follow the same dynamical system.
-            lag_list: A list of integers representing the lag order.
-            segments: A list defining the row and column intervals for dividing the matrix, e.g., [(0,1,2),(3,4,5)]; [[0],[1],[2]]
-        Returns:
-            delta_ts_data: The prepared delta time series data.
-            ts_data_process: The processed time series data.
-            segments: The processed segments.
+        Compute LK information flow T_{j->i} for all variable pairs.
+
+        Results are stored internally and accessible via `get_dict()`.
+        If `significance_test=True`, also computes standard errors and p-values.
         """
+        cov = split_matrix(self.cov, self.segments)
+        invC_mul_dC = split_matrix(self.invC_mul_dC, self.segments)[:self.segments_num, :]
+        error_square_mean = split_matrix(
+            self.error_square_mean, self.original_segments
+        )[:self.segments_num, :self.segments_num]
+
+        diag_inv_cov = cal_diag_inv_cov(cov)
+        self.diag_inv_cov = diag_inv_cov
+
+        # Information flow T_{j->i}
+        self.information_flow = cal_information_flow(
+            invC_mul_dC, cov, diag_inv_cov
+        )[:self.segments_num, :]
+
+        # Noise contribution to entropy change
+        dH_noise = cal_dH_noise(diag_inv_cov, error_square_mean, self.dt).reshape(-1, 1)
+        normalizer = np.abs(self.information_flow).sum(axis=1, keepdims=True) + np.abs(dH_noise)
+        self.dH_noise = dH_noise
+        self.normalizer = normalizer
+        self.normalized_information_flow = self.information_flow / normalizer
+
+        if self.significance_test:
+            # Full-matrix ridge inverse (needed for variance formula)
+            lam = self._find_min_lambda(self.cov)
+            inv_cov_full = inverse_symmetric_mat(self.cov, lam)
+            inv_cov = split_matrix(inv_cov_full, self.segments)
+
+            self.information_flow_std = cal_information_flow_std(
+                invC_mul_dC, cov, inv_cov, diag_inv_cov,
+                error_square_mean, self.deg_freedom,
+            )
+            self.p = (
+                1 - norm.cdf(np.abs(self.information_flow / self.information_flow_std))
+            ) * 2
+
+    def get_dict(self) -> dict:
+        """
+        Return estimation results as a dictionary.
+
+        Returns
+        -------
+        dict with keys:
+            information_flow, normalized_information_flow, segments, lag_list,
+            used_ridge_lambda, and (if significance_test) information_flow_std
+            and statistics (p99/p95/p90 critical values, p-values).
+        """
+        if not hasattr(self, 'information_flow'):
+            return "Run `causality_estimate()` first."
+
+        result = {
+            "information_flow": self.information_flow,
+            "normalized_information_flow": self.normalized_information_flow,
+            "segments": self.segments,
+            "lag_list": self.lag_list,
+            "used_ridge_lambda": (
+                "auto (adaptive)" if str(self.ridge_lambda).lower() == 'auto'
+                else self.ridge_lambda
+            ),
+        }
+        if self.significance_test:
+            result.update({
+                "information_flow_std": self.information_flow_std,
+                "statistics": {
+                    "p99_critical_value": self.information_flow_std * self.conf_level_99,
+                    "p95_critical_value": self.information_flow_std * self.conf_level_95,
+                    "p90_critical_value": self.information_flow_std * self.conf_level_90,
+                    "p": self.p,
+                },
+            })
+        return result
+
+    # ------------------------------------------------------------------
+    # Internal estimation steps
+    # ------------------------------------------------------------------
+
+    def prepare_dataset(self, ts_data_list, euler_step=1, lag_list=[1], segments=None) -> None:
+        """Build regressor matrix and finite-difference targets from raw time series."""
         ts_length, ts_var_num = ts_data_list[0].shape
 
-        if segments == None:
+        if segments is None:
             segments = generate_pairs(ts_var_num)
         segments = [sorted(item) for item in segments]
         self.original_segments = segments.copy()
-        segments_num = len(segments)
+
         delta_ts_data, ts_data_process, segments = prepare_dataset(
-            ts_data_list, segments, euler_step, lag_list, self.dt)
+            ts_data_list, segments, euler_step, lag_list, self.dt
+        )
 
         ts_length = ts_data_process.shape[0]
-        assert ts_length > ts_var_num, f"Assertion failed: length of time series ({ts_length}) must be greater than the number of variables ({ts_var_num})."
+        assert ts_length > ts_var_num, (
+            f"Time series length ({ts_length}) must exceed variable count ({ts_var_num})."
+        )
 
         self.lag_list = lag_list
         self.delta_ts_data = delta_ts_data
         self.ts_data_process = ts_data_process
-        self.segments = segments   # If there's a lag_list, the segments will be appended accordingly. Your can overwrite it in causality_estimate.
-        self.segments_num = segments_num
+        self.segments = segments
+        self.segments_num = len(self.original_segments)
         self.deg_freedom = ts_length - ts_var_num
 
-
     def linear_dynamic_estimate(self) -> None:
-        # estimator of dynamic system matrix : A
-        ones_column = np.ones((self.ts_data_process.shape[0], 1))  # 添加常数列
-        ts_data_process_augmented = np.concatenate(
-            [self.ts_data_process, ones_column], axis=1)
-        self.ts_data_process_augmented = ts_data_process_augmented
-        invC_mul_dC, _, _, _ = np.linalg.lstsq(
-            ts_data_process_augmented, self.delta_ts_data, rcond=None)
-        # self.invC_mul_dC_ = invC_mul_dC.copy()
-        # error square mean, related to B
-        error_vec = self.delta_ts_data - ts_data_process_augmented@invC_mul_dC
-        error_square_mean = error_vec.T@error_vec/self.deg_freedom
-        self.invC_mul_dC = invC_mul_dC[:-1, :].T
-        self.error_square_mean = error_square_mean
-    
-    
-    def select_optimal_lag(self, ts_data_list, max_lag=10, criterion='BIC', euler_step=1, segments=None,lag_interval=3):
         """
-        使用 AIC 或 BIC 准则自动选择最优 lag 长度
-        
-        Parameters:
-            ts_data_list: 时间序列列表
-            max_lag: 最大 lag 长度
-            criterion: 'AIC' 或 'BIC'
-            euler_step: 欧拉步长
-            segments: 分段定义
-            lag_interval: lag 的间隔，默认为 1
-        Returns:
-            best_lag_list: 最优的 lag 列表
-            ic_values: 每个 lag 对应的信息准则值
+        Estimate the drift matrix A and noise covariance B·B^T via OLS.
+
+        Solves:  [X | 1] · [A; b]^T ≈ dX/dt
+        Stores `invC_mul_dC` (= A^T) and `error_square_mean` (proportional to B·B^T).
+        """
+        ones = np.ones((self.ts_data_process.shape[0], 1))
+        X_aug = np.hstack([self.ts_data_process, ones])
+
+        coeffs, _, _, _ = np.linalg.lstsq(X_aug, self.delta_ts_data, rcond=None)
+        residuals = self.delta_ts_data - X_aug @ coeffs
+
+        self.invC_mul_dC = coeffs[:-1, :].T          # drop bias row; shape (N, N·lags)
+        self.error_square_mean = residuals.T @ residuals / self.deg_freedom
+
+    def covariance_estimate(self) -> None:
+        """Estimate the sample covariance of the regressor matrix."""
+        self.cov = np.cov(self.ts_data_process.T)
+
+    def select_optimal_lag(
+        self, ts_data_list, max_lag=10, criterion='BIC',
+        euler_step=1, segments=None, lag_interval=3,
+    ):
+        """
+        Grid-search over lag lengths and pick the one minimising AIC or BIC.
+
+        Parameters
+        ----------
+        ts_data_list : array or list of arrays, shape (T, N)
+            One or more time series from the same dynamical system.
+        max_lag : int
+            Maximum number of distinct lags to consider.
+        criterion : {'AIC', 'BIC'}
+            Information criterion used for model selection.
+        euler_step : int
+            Step size used for finite-difference derivative approximation.
+        segments : list of list of int, optional
+            Variable groupings. Defaults to individual variables.
+        lag_interval : int
+            Stride between successive lag values.
+
+        Returns
+        -------
+        best_lag_list : list of int
+            Optimal lag configuration.
+        ic_values : list of float
+            Information criterion value for each candidate lag length.
         """
         ic_values = []
         lag_configs = []
-        
-        for lag_len in track(range(1, max_lag + 1), desc="Selecting optimal lag"):
+
+        for lag_len in track(range(1, max_lag + 1), desc=f"Lag selection ({criterion})"):
             lag_list = list(range(1, lag_len * lag_interval + 1, lag_interval))
             lag_configs.append(lag_list)
-            
-            # 准备数据集
+
             self.prepare_dataset(ts_data_list, euler_step, lag_list, segments)
-            
-            # 估计动力学系统
             self.linear_dynamic_estimate()
-            
-            # 计算损失函数（RSS: Residual Sum of Squares）
-            n_samples = self.ts_data_process.shape[0]
-            n_vars = self.delta_ts_data.shape[1]
-            
-            # 参数数量 = (变量数 * lag长度) * 输出变量数 + 常数项
-            n_params = (self.ts_data_process.shape[1] + 1) * n_vars
-            
-            # 残差平方和
+
+            n = self.ts_data_process.shape[0]
+            k = (self.ts_data_process.shape[1] + 1) * self.delta_ts_data.shape[1]
             rss = np.trace(self.error_square_mean) * self.deg_freedom
-            
-            # 计算 AIC 或 BIC
+
             if criterion == 'AIC':
-                ic = n_samples * np.log(rss / n_samples) + 2 * n_params
+                ic = n * np.log(rss / n) + 2 * k
             elif criterion == 'BIC':
-                ic = n_samples * np.log(rss / n_samples) + np.log(n_samples) * n_params
+                ic = n * np.log(rss / n) + np.log(n) * k
             else:
                 raise ValueError("criterion must be 'AIC' or 'BIC'")
-            
+
             ic_values.append(ic)
-        
-        # 选择最小 IC 值对应的 lag
-        best_idx = np.argmin(ic_values)
+
+        best_idx = int(np.argmin(ic_values))
         best_lag_list = lag_configs[best_idx]
-        
-        # 使用最优 lag 重新准备数据集
+
         self.prepare_dataset(ts_data_list, euler_step, best_lag_list, segments)
         self.linear_dynamic_estimate()
-        
-        print(f"Best lag list: {best_lag_list} with {criterion} = {ic_values[best_idx]:.4f}")
-        
+
         return best_lag_list, ic_values
 
-
-    def covariance_estimate(self) -> None:
-        cov = np.cov(self.ts_data_process.T)
-        self.cov = cov
-
-
-    def causality_estimate(self) -> None:
+    def _find_min_lambda(self, mat: np.ndarray) -> float:
         """
-        Calculate Liang-Kleeman information flow under linear conditions with significance test. Get the result by calling **get_dict()**.
-        Parameters:
-            segments_overwite: Overwrite the segments defined in prepare_dataset.
-            significance_test: If True, will perform significance test.
+        Find the smallest ridge coefficient that reduces cond(mat) below `self.target_cond`.
+
+        Returns 0.0 if the matrix is already well-conditioned, or `self.ridge_lambda`
+        directly if it is not set to 'auto'.
         """
-        if self.significance_test:
-            inv_cov = inverse_symmetric_mat(self.cov, self.ridge_lambda)
-            self.inv_cov = inv_cov
+        if not (isinstance(self.ridge_lambda, str) and self.ridge_lambda.lower() == 'auto'):
+            return float(self.ridge_lambda)
 
-        cov = split_matrix(self.cov, self.segments)
-        invC_mul_dC = split_matrix(self.invC_mul_dC, self.segments)[
-            :self.segments_num, :]
-        error_square_mean = split_matrix(self.error_square_mean, self.original_segments)[
-            :self.segments_num, :self.segments_num]
+        if np.linalg.cond(mat) <= self.target_cond:
+            return 0.0
 
-        # invariance of block diagonal matrix
-        diag_inv_cov = cal_diag_inv_cov(cov)
-        self.diag_inv_cov = diag_inv_cov
-        # calculate informtaion flow
+        max_diag = np.max(np.abs(np.diag(mat))) or 1.0
+        for lam in np.logspace(-8, 0, 200):
+            if np.linalg.cond(mat + np.eye(mat.shape[0]) * lam * max_diag) <= self.target_cond:
+                return float(lam)
 
-        information_flow = cal_information_flow(
-            invC_mul_dC, cov, diag_inv_cov)[:self.segments_num, :]
-        self.information_flow = information_flow
-
-        # calculate normalized information flow
-        dH_noise = cal_dH_noise(
-            diag_inv_cov, error_square_mean, self.dt).reshape(-1, 1)
-        normalizer = np.sum(np.abs(
-            information_flow), axis=1, keepdims=True) + np.abs(dH_noise)
-        normalized_information_flow = information_flow/normalizer
-        self.dH_noise = dH_noise
-        self.normalizer = normalizer
-        self.normalized_information_flow = normalized_information_flow
-
-        if self.significance_test:
-            inv_cov = split_matrix(self.inv_cov, self.segments)
-            information_flow_std = cal_information_flow_std(
-                invC_mul_dC, cov, inv_cov, diag_inv_cov, error_square_mean, self.deg_freedom)
-            self.information_flow_std = information_flow_std
-            self.p = (1 - norm.cdf(np.abs(self.information_flow /
-                      self.information_flow_std))) * 2  # p-value
-
-
-    def get_dict(self):
-        """
-        Get the information flow and normalized information flow.
-        Returns:
-            information_flow: Information flow matrix. (i,j) represents (j → i)'s information flow.
-            normalized_information_flow: Normalized information flow matrix.
-            segments: Segments of the matrix.
-            lag_list: Lag list of the matrix.
-
-
-            information_flow_std: Standard deviation of information flow.
-            information_flow_std_origin: Standard deviation of information flow for original method.
-            statistics: Statistics of the information flow.
-                p99_critical_value: 99% critical value.
-                p95_critical_value: 95% critical value.
-                p90_critical_value: 90% critical value.
-                p: p-value of the information flow.
-        """
-        if hasattr(self, 'information_flow'):
-            state_dict = {
-                "information_flow": self.information_flow,
-                "normalized_information_flow": self.normalized_information_flow,
-                "segments": self.segments,
-                "lag_list": self.lag_list
-            }
-            if self.significance_test:
-                state_dict.update({
-                    "information_flow_std": self.information_flow_std,
-                    "statistics": {
-                        "p99_critical_value": self.information_flow_std*self.conf_level_99,
-                        "p95_critical_value": self.information_flow_std*self.conf_level_95,
-                        "p90_critical_value": self.information_flow_std*self.conf_level_90,
-                        "p": self.p
-                    }
-                })
-            return state_dict
-        else:
-            return "Causality estimate has not been run yet. Please run 'causality_estimate' first!"
+        return 1.0  # fallback for severely ill-conditioned matrices
